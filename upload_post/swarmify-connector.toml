@@ -2,10 +2,11 @@
 # Upload-Post's HTTP API (ADR 0015). A default package: Swarmify installs it from this folder and
 # enables it for every world that has not decided otherwise.
 name = "upload_post"
-version = "1.0.0"
+version = "1.0.1"
 label = "Upload-Post"
 about = "Posts or schedules a video to YouTube, TikTok and Instagram through Upload-Post."
 kind = "publish"
+icon = "icon.png"
 stage_types = ["connector"]
 capabilities = ["publish"]
 

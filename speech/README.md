@@ -229,7 +229,7 @@ them:
   `timings.json` records which voice spoke.
 - Starter voices without recording anyone: `uv run --project connectors/speech python
   connectors/speech/voices.py <world id> [presets...]` (in Docker, `docker compose exec api sh -c
-  'cd /data/packages/speech/1.1.0 && .venv/bin/python voices.py <world id>'`) has Kokoro
+  'cd /data/packages/speech/1.1.1 && .venv/bin/python voices.py <world id>'`) has Kokoro
   (`KOKORO_URL`, default `http://localhost:8880`; started from this folder's compose file when it
   is not up, or it says so when Docker is unavailable) speak one neutral 9 s
   sentence in each preset, by default eight varied ones (`af_heart` and `am_michael` warm,

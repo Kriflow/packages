@@ -1,10 +1,11 @@
 # The Remotion render connector (README.md beside this file). A default package: Swarmify installs
 # it from this folder and enables it for every world that has not decided otherwise.
 name = "remotion_render"
-version = "1.0.6"
+version = "1.0.7"
 label = "Remotion render"
 about = "Renders a script with the Remotion CLI. Needs Node and a Remotion project."
 kind = "stage"
+icon = "icon.svg"
 stage_types = ["connector"]
 
 planner_notes = "Use it only when the operator has a finished template; else remotion_build makes the video. params.project is the name of one of the world's Remotion render Templates."

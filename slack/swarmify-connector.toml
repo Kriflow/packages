@@ -1,10 +1,11 @@
 # The Slack connector (README.md beside this file): Remote Approvals in Slack. Installed with this
 # repository's packages but enabled only by the worlds that want it, as it needs a Slack app.
 name = "slack"
-version = "1.1.0"
+version = "1.1.1"
 label = "Slack"
 about = "Posts each gate to a Slack channel with a button per answer, and updates the message once the gate is answered, there or in Swarmify. A reply in a gate's thread asks the run's assistant, whose proposals come with Apply and Not now. Needs a Slack app of your own in Socket Mode (its README)."
 kind = "notify"
+icon = "icon.svg"
 stage_types = []
 enable_by_default = false
 # run_assistant: a reply in a gate's thread asks the run's Run Assistant, its listener forwarding it.

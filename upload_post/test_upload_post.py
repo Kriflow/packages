@@ -277,7 +277,7 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     data = tmp_path_factory.mktemp("data")
     skip = shutil.ignore_patterns(".venv", "__pycache__")
     shutil.copytree(HERE, data / "repo" / "connectors" / "upload_post", ignore=skip)
-    assert registry(data, FakeTransport()).install_defaults() == {"upload_post": "1.0.0"}
+    assert registry(data, FakeTransport()).install_defaults() == {"upload_post": "1.0.1"}
     return data / "packages"
 
 
@@ -363,7 +363,7 @@ def test_the_installed_package_starts_over_stdio_with_its_tools(
 ) -> None:
     connectors = given(McpTransport())
     found = connectors.find("w", "upload_post")
-    assert found is not None and found.version == "1.0.0"
+    assert found is not None and found.version == "1.0.1"
     connectors.setups.put_value("upload_post", None, "api_key", "k")  # no live key check
     tools = connectors.transport.list_tools(found, {"UPLOAD_POST_API_KEY": "k"})
     assert sorted(t.name for t in tools) == ["check_key", "preview", "publish", "upload_status"]

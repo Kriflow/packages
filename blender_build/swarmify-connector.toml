@@ -3,7 +3,7 @@
 # Blender. It has no server of its own: it asks the core for a Build Session, then renders through
 # blender_render, whose stills the session uses to see its work.
 name = "blender_build"
-version = "1.1.1"
+version = "1.1.2"
 label = "Blender build"
 about = "Writes a Blender project from the script in a sandboxed coding session, checking shots with stills, then renders it on the GPU."
 kind = "stage"

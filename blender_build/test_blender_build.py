@@ -55,6 +55,7 @@ def test_the_brief_names_the_script_the_folder_and_the_quality(tmp_path: Path) -
     brief = _task(script)
     assert f"turns the script at {script}" in brief and str(HERE / "build") in brief
     assert "quality `draft`" in brief and "render.json" in brief
+    assert "A revision is built the way a first build is" in brief  # still with the tools
 
 
 def test_speech_timings_name_the_narration_by_absolute_path(tmp_path: Path) -> None:

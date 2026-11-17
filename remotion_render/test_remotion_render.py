@@ -57,7 +57,7 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     `uv sync`ed there, then the (fake) npm and Remotion browser steps."""
     data = tmp_path_factory.mktemp("data")
     defaults = registry(data, FakeTransport()).install_defaults()
-    assert defaults["remotion_render"] == "1.0.7"
+    assert defaults["remotion_render"] == "1.0.8"
     return data / "packages"
 
 
@@ -153,7 +153,7 @@ def test_the_manifest_passes_and_shares_remotion_builds_templates() -> None:
 def test_install_puts_its_python_the_remotion_cli_and_its_browser_beside_it(
     installed: Path,
 ) -> None:
-    folder = installed / "remotion_render" / "1.0.7"
+    folder = installed / "remotion_render" / "1.0.8"
     assert (folder / ".venv" / "bin" / "python").is_file()
     assert (folder / "fake-install.log").read_text().splitlines() == [
         "npm ci --ignore-scripts --no-audit --no-fund",
@@ -166,7 +166,7 @@ def test_its_settings_reach_the_process_and_no_templates_folder_is_one(given: Gi
     """Its Templates are the world's (ADR 0028), not a folder of the data directory."""
     connectors = given(FakeTransport())
     render = connectors.find(W, "remotion_render")
-    assert render is not None and render.version == "1.0.7"
+    assert render is not None and render.version == "1.0.8"
     assert connectors._env(render) == {}
     connectors.save_setup(W, "remotion_render", {}, {"concurrency": "2"})
     assert connectors._env(render) == {"SWARMIFY_RENDER_CONCURRENCY": "2"}
@@ -244,7 +244,7 @@ def test_renders_the_script_into_a_video_with_a_sidecar(
 @pytest.fixture
 def own_browser(installed: Path) -> Iterator[Path]:
     """What `remotion browser ensure` leaves beside the installed package, for one test."""
-    browsers = installed / "remotion_render" / "1.0.7" / "node_modules" / ".remotion"
+    browsers = installed / "remotion_render" / "1.0.8" / "node_modules" / ".remotion"
     shell = browsers / "chrome-headless-shell" / "linux64" / "chrome-headless-shell"
     shell.parent.mkdir(parents=True)
     shell.write_text("#!/bin/sh\n")
@@ -410,6 +410,34 @@ def test_each_gpu_chunk_waits_for_the_shared_gpu_lock_and_says_so(
     assert json.loads(job.read_text())["status"] == "done"
     log = Path(json.loads(job.read_text())["log"]).read_text()
     assert log.count("Waiting for the GPU") == 1  # free for the next chunks
+
+
+def test_each_gpu_chunk_takes_a_gpu_slot_and_says_while_it_waits(
+    tmp_path: Path, fake_npx: Path, gpu: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Swarmify's Resources (ADR 0030): with the gpu's Slots named, a chunk waits for a free one,
+    saying so and leaving a waiting note with its run, then renders."""
+    slots = tmp_path / "resources" / "gpu"
+    (slots / "waiting").mkdir(parents=True)
+    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU", str(slots))
+    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU_SLOTS", "1")
+    monkeypatch.setenv("SWARMIFY_RUN_ID", "run_7")
+    monkeypatch.delenv("SWARMIFY_GPU_LOCK", raising=False)
+    params = stage(tmp_path, fake_npx)["params"]
+    with open(slots / "0.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        job = Path(rr.remotion_render(idempotency_key="k", **params)["job_id"])
+        deadline = time.monotonic() + 30
+        while (status := rr.remotion_render_status(str(job)))["message"] != "waiting for the GPU":
+            assert status["status"] == "running" and time.monotonic() < deadline, status
+            time.sleep(0.02)
+        [note] = [json.loads(f.read_text()) for f in (slots / "waiting").glob("*.json")]
+        assert (note["run"], note["package"]) == ("run_7", "remotion_render")
+    while rr.remotion_render_status(str(job))["status"] == "running":
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    assert json.loads(job.read_text())["status"] == "done"
+    assert not list(slots.glob("waiting/*.json"))
 
 
 def test_without_a_gpu_it_is_one_cli_call(

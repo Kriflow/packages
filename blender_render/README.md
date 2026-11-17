@@ -190,11 +190,13 @@ does not offer. Measured on the box (2026-11-06): eight 1080x1920 EEVEE stills t
 
 ## GPU
 
-`permissions.gpu = true`: the sandbox binds the host's GPU device files and hands the process
-`SWARMIFY_GPU_LOCK`, the lock file every GPU-granted process shares. Each Blender process holds an
-exclusive `flock` on it while it runs (non-blocking first, logging `Waiting for the GPU`, then
-blocking), so a render, a build's stills and a Remotion GPU render never share the card at once.
-Without the variable it runs unlocked.
+`permissions.gpu = true`: the sandbox binds the host's GPU device files and hands the process the
+gpu Resource's Slots (`SWARMIFY_RESOURCE_GPU`, Swarmify ADR 0030). Each Blender process holds a
+Slot while it runs (an exclusive `flock`; while none is free it logs `Waiting for the GPU`, leaves
+a waiting note naming its run and stage, and tries again every half second), so a render, a
+build's stills, a Remotion GPU render and a Chatterbox voice never share the card at once. An
+older Swarmify hands only `SWARMIFY_GPU_LOCK`, which it then holds instead; with neither it runs
+unlocked.
 
 Blender needs nothing more on the GPU: with the sandbox's binds its `gpu.platform` reports NVIDIA
 (no `__EGL_VENDOR_LIBRARY_*` variables). A cold Blender process spends about 11 s compiling

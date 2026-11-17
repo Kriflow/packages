@@ -3,11 +3,13 @@ cut points and the flag for joins with no silence, and the package installed thr
 install path, given to a world as a default and started over stdio MCP."""
 
 import base64
+import fcntl
 import io
 import json
 import math
 import re
 import threading
+import time
 import wave
 from collections.abc import Callable, Iterator
 from contextlib import closing
@@ -318,6 +320,46 @@ def test_a_failing_engine_redoes_the_whole_run_on_the_next_so_voices_never_mix()
     assert [t["scene"] for _, t in takes] == ["hook", "fact"]
 
 
+def test_each_request_to_a_gpu_engine_holds_a_gpu_slot_and_says_while_it_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """Swarmify's Resources (ADR 0030): another process holding the gpu's one Slot, a request
+    to an engine on the GPU waits, saying so, with a waiting note naming its run; one to an
+    engine off it (Kokoro) never waits."""
+    gpu = tmp_path / "gpu"
+    (gpu / "waiting").mkdir(parents=True)
+    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU", str(gpu))
+    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU_SLOTS", "1")
+    monkeypatch.setenv("SWARMIFY_RUN_ID", "run_7")
+    monkeypatch.setenv("SPEECH_GPU_ENGINES", "http://b")
+    seen: list[str] = []
+    notes: list[dict[str, Any]] = []
+    with open(gpu / "0.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with engines(a=kokoro(seen), b=chatterbox(seen)) as http:
+            sp.voice_run(http, sp.parse_script(SCRIPT), ["http://a"])  # off the GPU: no wait
+            assert sp.WAITING not in capfd.readouterr().err
+
+            def release() -> None:
+                deadline = time.monotonic() + 10
+                while not (found := list(gpu.glob("waiting/*.json"))):
+                    if time.monotonic() > deadline:
+                        fcntl.flock(held, fcntl.LOCK_UN)
+                        return
+                    time.sleep(0.02)
+                notes.append(json.loads(found[0].read_text()))
+                fcntl.flock(held, fcntl.LOCK_UN)
+
+            thread = threading.Thread(target=release)
+            thread.start()
+            engine, *_ = sp.voice_run(http, sp.parse_script(SCRIPT), ["http://b"])
+            thread.join()
+    assert engine == "http://b"
+    assert capfd.readouterr().err.count(sp.WAITING) == 1  # the next request found it free
+    assert (notes[0]["run"], notes[0]["package"]) == ("run_7", "speech")
+    assert not list(gpu.glob("waiting/*.json")) and not (gpu / "0.holder").exists()
+
+
 def test_when_every_engine_fails_the_error_names_each() -> None:
     seen: list[str] = []
     with engines(a=kokoro(seen, fail=True)) as http, pytest.raises(ToolError) as err:
@@ -389,6 +431,13 @@ def test_a_streamed_wav_with_a_bogus_length_is_read_to_its_end() -> None:
 HERE = Path(__file__).parent
 
 
+def test_it_declares_the_gpu_resource_and_which_engines_run_on_it() -> None:
+    m = sp.MANIFEST
+    assert m["permissions"]["resources"] == ["gpu"]
+    [field] = [f for f in m["config"] if f["key"] == "gpu_engines"]
+    assert field["env"] == "SPEECH_GPU_ENGINES" and field["default"] == sp.DEFAULT_GPU_ENGINES
+
+
 def test_the_manifest_passes_and_declares_what_the_tool_takes() -> None:
     m = read_manifest(HERE)
     assert m == sp.MANIFEST and (m["name"], m["kind"]) == ("speech", "stage")
@@ -438,7 +487,7 @@ def registry(data: Path, transport: Any) -> Connectors:
 def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """One real install for the module: copied to the packages folder and `uv sync`ed there."""
     data = tmp_path_factory.mktemp("data")
-    assert registry(data, FakeTransport()).install_defaults()["speech"] == "1.1.1"
+    assert registry(data, FakeTransport()).install_defaults()["speech"] == "1.2.0"
     return data / "packages"
 
 
@@ -457,7 +506,7 @@ def given(installed: Path, tmp_path: Path) -> Callable[[Any], Connectors]:
 
 
 def test_install_puts_its_dependencies_beside_it(installed: Path) -> None:
-    folder = installed / "speech" / "1.1.1"
+    folder = installed / "speech" / "1.2.0"
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "speech.py").is_file()
 
 
@@ -479,10 +528,13 @@ def test_the_engines_setting_reaches_the_process_as_speech_endpoints(
 ) -> None:
     connectors = given(FakeTransport())
     speech = connectors.find("w", "speech")
-    assert speech is not None and speech.version == "1.1.1"
-    assert connectors._env(speech) == {"SPEECH_ENDPOINTS": sp.DEFAULT_ENDPOINTS}
+    assert speech is not None and speech.version == "1.2.0"
+    assert connectors._env(speech) == {
+        "SPEECH_ENDPOINTS": sp.DEFAULT_ENDPOINTS,
+        "SPEECH_GPU_ENGINES": sp.DEFAULT_GPU_ENGINES,
+    }
     connectors.save_setup("w", "speech", {"speech_endpoints": "http://a,http://b"}, {})
-    assert connectors._env(speech) == {"SPEECH_ENDPOINTS": "http://a,http://b"}
+    assert connectors._env(speech)["SPEECH_ENDPOINTS"] == "http://a,http://b"
 
 
 # Over stdio MCP, against a fake engine on a real port.

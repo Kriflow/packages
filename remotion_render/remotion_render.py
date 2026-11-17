@@ -30,17 +30,18 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import socket
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -61,6 +62,7 @@ GPU = ("nvidia0", "dri/renderD*")
 driver's DRM render node."""
 GPU_LOCK = "SWARMIFY_GPU_LOCK"
 """The lock file every process granted the GPU shares, which each GPU chunk holds."""
+PACKAGE = "remotion_render"
 WAITING = "Waiting for the GPU"
 GRACE = 5.0
 """Seconds a cancelled job has to stop on SIGTERM before it is killed."""
@@ -364,20 +366,86 @@ def _run(name: str, argv: list[str], project: Path, log: Any) -> str:
 
 @contextmanager
 def _gpu(log: Any) -> Iterator[None]:
-    """The card to this process alone while it runs: an exclusive flock on the shared GPU lock,
-    saying in the log when another GPU job holds it. Without the variable, no lock."""
-    path = os.environ.get(GPU_LOCK)
-    if not path:
+    """The card to this process alone while it runs: a Slot of the gpu Resource, saying in the
+    log when another GPU job holds it."""
+
+    def waits() -> None:
+        log.write(f"{WAITING}\n")
+        log.flush()
+
+    with _slot("gpu", waits):
         yield
+
+
+def _locked(path: Path) -> IO[str] | None:
+    """`path` opened and locked exclusively, or None when another process holds it."""
+    f = open(path, "a")  # noqa: SIM115, the caller closes it to let go
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+    except BlockingIOError:
+        f.close()
+        return None
+
+
+@contextmanager
+def _slot(resource: str, waits: Callable[[], None]) -> Iterator[None]:
+    """One Slot of a Swarmify Resource (ADR 0030) held while the block runs, by an exclusive
+    flock on one of its slot files, so any exit frees it: each in turn, else a waiting note (held
+    locked too) and another try every half second; `waits` is called once when none is free. A
+    Swarmify from before Resources names only the gpu's lock (`SWARMIFY_GPU_LOCK`); with neither,
+    no lock. A copy of swarmify_connectors.resources.hold, which packages cannot import."""
+    env = f"SWARMIFY_RESOURCE_{resource.upper()}"
+    old = os.environ.get("SWARMIFY_GPU_LOCK") if resource == "gpu" else None
+    if not os.environ.get(env):
+        if not old:
+            yield
+            return
+        with open(old, "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                waits()
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
         return
-    with open(path, "a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            log.write(f"{WAITING}\n")
-            log.flush()
-            fcntl.flock(lock, fcntl.LOCK_EX)
-        yield  # closing the file lets it go
+    place, slots = Path(os.environ[env]), int(os.environ.get(f"{env}_SLOTS") or 1)
+    note = {
+        "run": os.environ.get("SWARMIFY_RUN_ID"),
+        "root": os.environ.get("SWARMIFY_RUN_ROOT"),
+        "stage": os.environ.get("SWARMIFY_STAGE_ID"),
+        "package": PACKAGE,
+        "since": time.time(),
+    }
+    mine = place / "waiting" / f"{os.getpid()}-{secrets.token_hex(4)}.json"
+    waiting: IO[str] | None = None
+    try:
+        while True:
+            for i in range(slots):
+                if (slot := _locked(place / f"{i}.lock")) is None:
+                    continue
+                if waiting:
+                    waiting.close()
+                    mine.unlink(missing_ok=True)
+                    waiting = None
+                holder = place / f"{i}.holder"
+                holder.write_text(json.dumps({**note, "since": time.time()}))
+                try:
+                    yield
+                finally:
+                    holder.unlink(missing_ok=True)  # while still held, so never another's
+                    slot.close()
+                return
+            mine.parent.mkdir(parents=True, exist_ok=True)
+            if waiting is None and (waiting := _locked(mine)):
+                waiting.write(json.dumps(note))
+                waiting.flush()
+                waits()
+            time.sleep(0.5)
+    finally:
+        if waiting:
+            waiting.close()
+            mine.unlink(missing_ok=True)
 
 
 def _frames(frames: str, composition: str, listed: Any) -> tuple[int, int]:

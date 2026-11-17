@@ -1,7 +1,7 @@
 # The speech connector (README.md beside this file). A default package: Swarmify installs it from
 # this folder and enables it for every world that has not decided otherwise.
 name = "speech"
-version = "1.1.1"
+version = "1.2.0"
 label = "Speech"
 about = "Voices a script, one take per scene, with word timings and cut points. Needs a speech engine (its README, Speech engines)."
 kind = "stage"
@@ -104,6 +104,14 @@ default = "http://localhost:8881,http://localhost:8880"
 env = "SPEECH_ENDPOINTS"
 help = "The engines' URLs, comma separated, in the order to try them. In Docker, beside this package's compose file: http://chatterbox:8881,http://kokoro:8880 (or chatterbox-gpu)."
 
+[[config]]
+key = "gpu_engines"
+label = "Engines on the GPU"
+type = "string"
+default = "http://localhost:8881,http://chatterbox:8881,http://chatterbox-gpu:8881"
+env = "SPEECH_GPU_ENGINES"
+help = "Of the engines above, those that run on this host's GPU, comma separated: each request to one waits for the GPU while a render holds it. Empty for none."
+
 # Each URL in the Setting is an engine; the Connectors page shows whether each answers /health.
 [[services]]
 name = "engines"
@@ -111,6 +119,8 @@ url = "speech_endpoints"
 health = "/health"
 
 # Its sandbox (ADR 0021): the engines' URLs its Setting holds, and nothing else; its voices are
-# its Owned Folder, the script and takes the run's.
+# its Owned Folder, the script and takes the run's. The gpu Resource's Slots (ADR 0030), held
+# around each request to an engine on the GPU.
 [permissions]
 services = ["engines"]
+resources = ["gpu"]

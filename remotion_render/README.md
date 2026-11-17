@@ -87,8 +87,9 @@ at frame 1661 with `Error creating WebGL context`):
    the audio encoded once to AAC at 320k, into `short.mp4`.
 5. The hidden bundle and parts are deleted, whether it succeeded or not.
 
-Each chunk's render holds the shared GPU lock (`SWARMIFY_GPU_LOCK`, see the connector sandbox
-in Swarmify's README) while it runs, so another GPU job never draws on the card at the same time;
+Each chunk's render holds a Slot of the gpu Resource (`SWARMIFY_RESOURCE_GPU`, see Resources
+under the connector sandbox in Swarmify's README; `SWARMIFY_GPU_LOCK` from an older Swarmify)
+while it runs, so another GPU job never draws on the card at the same time;
 while one does, the render waits and its progress says `waiting for the GPU`. Between chunks the
 lock is let go, so other jobs take turns with a long render.
 

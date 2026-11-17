@@ -15,6 +15,14 @@ One Setting, **Speech engines** (`speech_endpoints`, reaching the connector as
 `http://localhost:8881,http://localhost:8880`, the engines started natively; set it on the
 Connectors page, shared by every world or per world.
 
+A second Setting, **Engines on the GPU** (`gpu_engines`, `SPEECH_GPU_ENGINES`), names which of
+them run on this host's GPU; it defaults to Chatterbox's URLs (`http://localhost:8881`,
+`http://chatterbox:8881`, `http://chatterbox-gpu:8881`). The package declares the `gpu`
+Resource (Swarmify ADR 0030) and holds one of its Slots around each request to such an engine,
+so a voice and a Blender or Remotion render never fight over the card's memory: while a render
+holds it, the request waits, `Waiting for the GPU` in the package's stderr, and the run page
+names who holds it. An engine off the list (Kokoro, a remote one) never waits.
+
 Upgrading from V1, where it was an environment variable of the app: the start that first installs
 the package copies a `SPEECH_ENDPOINTS` set in the app's environment into this shared Setting, so
 a Docker deployment whose `.env` set it keeps its engines. After that the Setting is what counts.

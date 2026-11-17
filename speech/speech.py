@@ -15,22 +15,31 @@ Only this connector gives `voices/` a meaning; to the core the schema is opaque.
 
 It is a Connector Package (ADR 0019): `swarmify-connector.toml` beside it is everything Swarmify
 knows of it, including the engines as a Setting and a Service whose health the core polls.
+
+An engine `SPEECH_GPU_ENGINES` lists runs on the GPU the renders share: each request to it holds
+a Slot of the gpu Resource (Swarmify ADR 0030), so a voice and a Blender render never fight over
+video memory.
 """
 
 import base64
+import contextlib
 import difflib
+import fcntl
 import io
 import json
 import math
 import os
 import re
+import secrets
 import sys
+import time
 import tomllib
 import wave
 from array import array
+from collections.abc import Callable, Iterator
 from itertools import accumulate
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 import httpx
 from mcp.server.mcpserver import MCPServer
@@ -44,6 +53,10 @@ SCRIPT: dict[str, Any] = MANIFEST["types"]["script"]
 with `output_type: script`. `parse_script` is the strict check of what arrives."""
 
 DEFAULT_ENDPOINTS = "http://localhost:8881,http://localhost:8880"
+DEFAULT_GPU_ENGINES = "http://localhost:8881,http://chatterbox:8881,http://chatterbox-gpu:8881"
+"""Chatterbox's URLs: the engines on the GPU unless the Setting says otherwise."""
+PACKAGE = "speech"
+WAITING = "Waiting for the GPU"
 PAUSE = 0.3
 """Seconds after a line when the script does not say."""
 WINDOW = 0.01
@@ -64,6 +77,86 @@ mcp = MCPServer("speech")
 def endpoints() -> list[str]:
     raw = os.environ.get("SPEECH_ENDPOINTS") or DEFAULT_ENDPOINTS
     return [e.strip().rstrip("/") for e in raw.split(",") if e.strip()]
+
+
+def gpu_engines() -> set[str]:
+    raw = os.environ.get("SPEECH_GPU_ENGINES", DEFAULT_GPU_ENGINES)
+    return {e.strip().rstrip("/") for e in raw.split(",") if e.strip()}
+
+
+def _waits() -> None:
+    print(WAITING, file=sys.stderr, flush=True)
+
+
+def _locked(path: Path) -> IO[str] | None:
+    """`path` opened and locked exclusively, or None when another process holds it."""
+    f = open(path, "a")  # noqa: SIM115, the caller closes it to let go
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+    except BlockingIOError:
+        f.close()
+        return None
+
+
+@contextlib.contextmanager
+def _slot(resource: str, waits: Callable[[], None]) -> Iterator[None]:
+    """One Slot of a Swarmify Resource (ADR 0030) held while the block runs, by an exclusive
+    flock on one of its slot files, so any exit frees it: each in turn, else a waiting note (held
+    locked too) and another try every half second; `waits` is called once when none is free. A
+    Swarmify from before Resources names only the gpu's lock (`SWARMIFY_GPU_LOCK`); with neither,
+    no lock. A copy of swarmify_connectors.resources.hold, which packages cannot import."""
+    env = f"SWARMIFY_RESOURCE_{resource.upper()}"
+    old = os.environ.get("SWARMIFY_GPU_LOCK") if resource == "gpu" else None
+    if not os.environ.get(env):
+        if not old:
+            yield
+            return
+        with open(old, "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                waits()
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+        return
+    place, slots = Path(os.environ[env]), int(os.environ.get(f"{env}_SLOTS") or 1)
+    note = {
+        "run": os.environ.get("SWARMIFY_RUN_ID"),
+        "root": os.environ.get("SWARMIFY_RUN_ROOT"),
+        "stage": os.environ.get("SWARMIFY_STAGE_ID"),
+        "package": PACKAGE,
+        "since": time.time(),
+    }
+    mine = place / "waiting" / f"{os.getpid()}-{secrets.token_hex(4)}.json"
+    waiting: IO[str] | None = None
+    try:
+        while True:
+            for i in range(slots):
+                if (slot := _locked(place / f"{i}.lock")) is None:
+                    continue
+                if waiting:
+                    waiting.close()
+                    mine.unlink(missing_ok=True)
+                    waiting = None
+                holder = place / f"{i}.holder"
+                holder.write_text(json.dumps({**note, "since": time.time()}))
+                try:
+                    yield
+                finally:
+                    holder.unlink(missing_ok=True)  # while still held, so never another's
+                    slot.close()
+                return
+            mine.parent.mkdir(parents=True, exist_ok=True)
+            if waiting is None and (waiting := _locked(mine)):
+                waiting.write(json.dumps(note))
+                waiting.flush()
+                waits()
+            time.sleep(0.5)
+    finally:
+        if waiting:
+            waiting.close()
+            mine.unlink(missing_ok=True)
 
 
 VOICES = "voices"
@@ -574,7 +667,7 @@ def voice_run(
     default. Raises ToolError naming each engine's failure."""
     voices = voices or []
     chosen = next((v for v in voices if v["name"] == voice), None)
-    failures = []
+    failures, on_gpu = [], gpu_engines()
     for base in engines:
         try:
             health = _get(http, f"{base}/health")
@@ -598,7 +691,8 @@ def voice_run(
             for scene in scenes:
                 say = " ".join(for_engine(line["say"], tags) for line in scene["lines"])
                 text = " ".join(line["text"] for line in scene["lines"])
-                audio, heard = _take(http, base, say, text, own, seed, clip, options)
+                with _slot("gpu", _waits) if base in on_gpu else contextlib.nullcontext():
+                    audio, heard = _take(http, base, say, text, own, seed, clip, options)
                 takes.append((audio, take_timings(scene, audio, heard)))
             return base, spoke, options, takes
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:

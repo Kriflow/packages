@@ -72,7 +72,7 @@ def given(installed: Path, tmp_path: Path) -> Given:
         connectors = registry(data, transport)
         connectors.install_defaults()  # installed already: only remembered
         connectors.offer_defaults(W)
-        connectors.enable(W, "blender_render", "1.0.5")
+        connectors.enable(W, "blender_render", "1.0.6")
         return connectors
 
     return make
@@ -186,7 +186,7 @@ def test_the_manifest_passes_off_by_default_on_the_gpu_with_no_network() -> None
 
 
 def test_install_syncs_its_python_then_fetches_blender_and_ffmpeg(installed: Path) -> None:
-    folder = installed / "blender_render" / "1.0.5"
+    folder = installed / "blender_render" / "1.0.6"
     assert (folder / ".venv" / "bin" / "python").exists()
     assert (folder / "fake-install.log").read_text() == "npm run fetch --silent\n"
 
@@ -340,7 +340,7 @@ def test_a_finish_step_makes_the_video_with_the_documented_environment(
     assert connectors.run_stage(W, "run_1", "stage_2", config).status == "done"
     output = Path(config["params"]["output_path"])
     made = json.loads(output.read_text())
-    package = tmp_path / "packages" / "blender_render" / "1.0.5"
+    package = tmp_path / "packages" / "blender_render" / "1.0.6"
     assert {k: v for k, v in made.items() if k.startswith("BLENDER_")} == {
         "BLENDER_PROJECT": str(project),
         "BLENDER_ASSETS": str(tmp_path / "worlds" / W / "assets"),
@@ -662,6 +662,40 @@ def test_stills_that_cannot_make_a_sheet_say_why(
     assert result.is_error
     assert said in result.content[0].text
     assert not (build.parent / "stills" / f"{arguments['shot']}.png").exists()
+
+
+def test_a_render_takes_a_gpu_slot_and_its_wait_names_its_run(
+    tmp_path: Path, path_tools: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Swarmify's Resources (ADR 0030): another process holding the gpu's one Slot, the render
+    waits, saying so, with a waiting note naming its run and stage; then it holds the Slot."""
+    gpu = tmp_path / "resources" / "gpu"
+    (gpu / "waiting").mkdir(parents=True)
+    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU", str(gpu))
+    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU_SLOTS", "1")
+    monkeypatch.setenv("SWARMIFY_RUN_ID", "run_7")
+    monkeypatch.setenv("SWARMIFY_STAGE_ID", "stage_2")
+    monkeypatch.delenv("SWARMIFY_GPU_LOCK", raising=False)
+    params = stage(tmp_path, make_project(tmp_path / "p"))["params"]
+    with open(gpu / "0.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        job = Path(br.blender_render(idempotency_key="k", **params)["job_id"])
+        deadline = time.monotonic() + 30
+        while (status := br.blender_render_status(str(job)))["message"] != "waiting for the GPU":
+            assert status["status"] == "running" and time.monotonic() < deadline, status
+            time.sleep(0.02)
+        [note] = [json.loads(f.read_text()) for f in (gpu / "waiting").glob("*.json")]
+        assert (note["run"], note["stage"], note["package"]) == (
+            "run_7",
+            "stage_2",
+            "blender_render",
+        )
+        assert calls(Path(params["output_path"])) == []
+    while br.blender_render_status(str(job))["status"] == "running":
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    assert br.blender_render_status(str(job))["status"] == "done"
+    assert not list(gpu.glob("waiting/*.json")) and not (gpu / "0.holder").exists()
 
 
 def test_stills_wait_for_the_gpu_like_the_render(

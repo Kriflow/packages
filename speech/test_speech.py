@@ -488,7 +488,7 @@ def registry(data: Path, transport: Any) -> Connectors:
 def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """One real install for the module: copied to the packages folder and `uv sync`ed there."""
     data = tmp_path_factory.mktemp("data")
-    assert registry(data, FakeTransport()).install_defaults()["speech"] == "1.3.0"
+    assert registry(data, FakeTransport()).install_defaults()["speech"] == "1.3.1"
     return data / "packages"
 
 
@@ -507,7 +507,7 @@ def given(installed: Path, tmp_path: Path) -> Callable[[Any], Connectors]:
 
 
 def test_install_puts_its_dependencies_beside_it(installed: Path) -> None:
-    folder = installed / "speech" / "1.3.0"
+    folder = installed / "speech" / "1.3.1"
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "speech.py").is_file()
 
 
@@ -535,7 +535,7 @@ def test_the_engines_setting_reaches_the_process_as_speech_endpoints(
 ) -> None:
     connectors = given(FakeTransport())
     speech = connectors.find("w", "speech")
-    assert speech is not None and speech.version == "1.3.0"
+    assert speech is not None and speech.version == "1.3.1"
     assert connectors._env(speech) == {
         "SPEECH_ENDPOINTS": sp.DEFAULT_ENDPOINTS,
         "SPEECH_GPU_ENGINES": sp.DEFAULT_GPU_ENGINES,
@@ -1005,6 +1005,30 @@ def test_a_rerun_replaces_the_takes_of_the_last(
     effect(tmp_path, assets, {"takes": 3})
     effect(tmp_path, assets, {"takes": 1})
     assert sorted(p.name for p in tmp_path.glob("effect-*.wav")) == ["effect-1.wav"]
+
+
+def projected(*lines: str) -> str:
+    """A script as a typed swarm stage projects it: a title, the fenced JSON, a body."""
+    scenes = [{"id": "u", "lines": [{"text": t, "pause_after": 0} for t in lines]}]
+    return f"# The utterance\n\n```json\n{json.dumps({'scenes': scenes})}\n```\n\nWhy it.\n"
+
+
+def test_an_effect_reads_a_scripts_lines_as_the_utterance(
+    tmp_path: Path, assets: Path, one_engine: list[dict[str, Any]]
+) -> None:
+    answer = effect(tmp_path, assets, {}, need=projected("Uhhhh (pause)", "hhh"))
+    assert [s["input"] for s in one_engine] == ["Uhhhh hhh"]
+    assert answer["takes"][0]["settings"]["text"] == "Uhhhh hhh"
+
+
+def test_a_script_of_only_pauses_voices_no_effect(
+    tmp_path: Path, assets: Path, one_engine: list[dict[str, Any]]
+) -> None:
+    effect(tmp_path, assets, {"takes": 2})
+    answer = effect(tmp_path, assets, {"takes": 2}, need=projected("(pause)"))
+    assert answer["takes"] == [] and answer["engine"] is None
+    assert len(one_engine) == 2  # only the first run asked an engine
+    assert list(tmp_path.glob("effect-*.wav")) == []
 
 
 @pytest.mark.parametrize(

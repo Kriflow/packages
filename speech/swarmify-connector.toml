@@ -1,14 +1,14 @@
 # The speech connector (README.md beside this file). A default package: Swarmify installs it from
 # this folder and enables it for every world that has not decided otherwise.
 name = "speech"
-version = "1.3.0"
+version = "1.3.1"
 label = "Speech"
 about = "Voices a script, one take per scene, with word timings and cut points. Needs a speech engine (its README, Speech engines)."
 kind = "stage"
 icon = "icon.svg"
 stage_types = ["connector"]
 
-planner_notes = """The script is a fenced JSON block {"scenes": [{"id", "lines": [{"text", "pause_after"}]}]}, each line an object, pause_after optional seconds; else paragraphs become scenes and sentences lines. In a line's text, (pause), (beat), (long pause) or (pause 1.5s) is silence, and delivery directions (whispers), (laughs), (chuckles), (sighs), (gasps), (excited), (dramatically), (sadly), (angrily), (sarcastically), (surprised), (scared), or tags as [clear throat], [cough], [groan], [sniff], [shush], [narration], [advertisement], are voiced by engines that support them and never read aloud. It voices one take per scene into narration/ beside timings.json, which holds each line's words (Remotion Caption shape) and cut points; give a later build stage both the script and timings.json as inputs. Left without params.voice, the script's own voice speaks, which its judge picks when the world has voices. With params.effect it voices a short non-word utterance instead (the input's text, or effect.text, as "Uhhhhhhh" or "Mmmmh"), processed as declared: pitch in semitones, speed the playback rate (tape-style from pitch when not given), room echo 0 to 1, a hard cut in seconds, min_length seconds a take must last; takes is a count or a list of each take's own settings. The output is a JSON listing each take's file, duration and settings, the takes beside it as <output stem>-<n>.wav."""
+planner_notes = """The script is a fenced JSON block {"scenes": [{"id", "lines": [{"text", "pause_after"}]}]}, each line an object, pause_after optional seconds; else paragraphs become scenes and sentences lines. In a line's text, (pause), (beat), (long pause) or (pause 1.5s) is silence, and delivery directions (whispers), (laughs), (chuckles), (sighs), (gasps), (excited), (dramatically), (sadly), (angrily), (sarcastically), (surprised), (scared), or tags as [clear throat], [cough], [groan], [sniff], [shush], [narration], [advertisement], are voiced by engines that support them and never read aloud. It voices one take per scene into narration/ beside timings.json, which holds each line's words (Remotion Caption shape) and cut points; give a later build stage both the script and timings.json as inputs. Left without params.voice, the script's own voice speaks, which its judge picks when the world has voices. With params.effect it voices a short non-word utterance instead (the input's text, a typed script's lines, or effect.text, as "Uhhhhhhh" or "Mmmmh"; a script of only (pause) voices no take and asks no engine), processed as declared: pitch in semitones, speed the playback rate (tape-style from pitch when not given), room echo 0 to 1, a hard cut in seconds, min_length seconds a take must last; takes is a count or a list of each take's own settings. The output is a JSON listing each take's file, duration and settings, the takes beside it as <output stem>-<n>.wav."""
 input_types = ["script"]
 world_types = "speech_types"
 
@@ -40,7 +40,7 @@ description = "for repeatable takes"
 [params.properties.effect]
 type = "object"
 additionalProperties = false
-description = "the vocal-effect mode: voices a short non-word utterance (the input's text, else effect.text) and processes each take as declared; the output is a JSON of the takes, written beside it"
+description = "the vocal-effect mode: voices a short non-word utterance (the input's text or its script's lines, else effect.text) and processes each take as declared; the output is a JSON of the takes, written beside it"
 [params.properties.effect.properties.text]
 type = "string"
 minLength = 1

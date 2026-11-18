@@ -937,9 +937,29 @@ def effect_run(
     raise ToolError("no speech engine voiced the effect. " + "; ".join(failures))
 
 
+def effect_utterance(text: str) -> str | None:
+    """The utterance an effect's input holds: a script's lines (its fenced JSON block, as a stage
+    typed `script` writes it) joined with their pause directions taken out, else the whole text
+    without its frontmatter. None for a script of only pauses: there is nothing to voice."""
+    fenced = _FENCE.search(text)
+    try:
+        scenes = json.loads(fenced.group(1))["scenes"] if fenced else None
+        said = [line["text"] for scene in scenes for line in scene["lines"]] if scenes else None
+    except (ValueError, TypeError, KeyError):
+        said = None
+    if not said or not all(isinstance(t, str) for t in said):
+        return " ".join(_FRONTMATTER.sub("", text).split())
+
+    def pause(m: re.Match[str]) -> str:
+        words = " ".join(m[1].split()).lower().rstrip(".!,")
+        return " " if _PAUSE_WORDS.fullmatch(words) else m[0]
+
+    return " ".join(_DIRECTION.sub(pause, " ".join(said)).split()) or None
+
+
 def voice_effect(
     settings: Any,
-    utterance: str,
+    utterance: str | None,
     out: Path,
     order: list[str],
     voice: str,
@@ -948,16 +968,24 @@ def voice_effect(
 ) -> dict[str, Any]:
     """The speech tool's effect mode: writes `out` (the effect's JSON) and its takes beside it
     as `<out's stem>-<n>.wav`, replacing a rerun's; answers with each take's file, duration and
-    settings."""
+    settings. An `utterance` of None with no `text` declared voices no take and asks no engine."""
     if seed is not None and isinstance(settings, dict) and "seed" not in settings:
         settings = {**settings, "seed": seed}
+    silent = utterance is None and not (isinstance(settings, dict) and "text" in settings)
     try:
-        takes = effect_takes(settings, utterance)
+        takes = effect_takes(settings, utterance or "")
     except ValueError as exc:
-        raise ToolError(str(exc)) from exc
+        if not silent:
+            raise ToolError(str(exc)) from exc
+        effect_takes(settings, "-")  # the settings are still checked; raises on a bad one
+        takes = []
     voices, warnings = catalog(assets_path)
-    with _client() as http:
-        engine, spoke, options, made, short = effect_run(http, takes, order, voice.strip(), voices)
+    engine, spoke, options, made, short = None, None, {}, [], []
+    if takes:
+        with _client() as http:
+            engine, spoke, options, made, short = effect_run(
+                http, takes, order, voice.strip(), voices
+            )
     warnings += short
     out.parent.mkdir(parents=True, exist_ok=True)
     for old in out.parent.glob(f"{out.stem}-*.wav"):
@@ -976,9 +1004,12 @@ def voice_effect(
     return {
         "output": str(out),
         **record,
-        "message": f"{len(listed)} effect takes from {engine}"
-        + (f" in {spoke}" if spoke else "")
-        + f": {said}"
+        "message": (
+            f"{len(listed)} effect takes from {engine}" + (f" in {spoke}" if spoke else "")
+            if listed
+            else "no effect takes: the script holds only pauses"
+        )
+        + (f": {said}" if listed else "")
         + (f"; {'; '.join(warnings)}" if warnings else ""),
     }
 
@@ -1025,7 +1056,9 @@ def speech(
         )
     text = script.read_text()
     if effect is not None:
-        utterance = " ".join(_FRONTMATTER.sub("", text).split())
+        utterance = effect_utterance(text)
+        return voice_effect(effect, utterance, Path(output_path), order, voice, seed, assets_path)
+    if False:  # pragma: no cover
         return voice_effect(effect, utterance, Path(output_path), order, voice, seed, assets_path)
     try:
         scenes = parse_script(text)

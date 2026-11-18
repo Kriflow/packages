@@ -211,6 +211,11 @@ from a voice the world may use rather than a downloaded clip.
 - The voice is resolved per engine as for a script (Voices, below), with the voice's options;
   the engines are tried in order, and one that fails has the whole effect redone on the next.
   No alignment is asked for.
+- The input may be a script (a stage typed `output_type: script` writes one, which is what the
+  connector's `script` input type asks of a swarm stage): its lines, joined, are the utterance,
+  with pause directions taken out. A script whose lines are only `(pause)` voices no take and
+  asks no engine, so a workflow that needs an effect only some of the time pays nothing when it
+  does not: the output then lists no takes.
 - The output, `uhh.json` here, holds `engine`, `voice`, `chosen`, `options`, `warnings` and per
   take its `file`, `duration` and `settings`; the takes are beside it as `uhh-1.wav`, `uhh-2.wav`
   and so on, replacing a rerun's. Settings out of range or of the wrong kind are refused before

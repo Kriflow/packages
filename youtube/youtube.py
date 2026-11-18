@@ -30,6 +30,12 @@ description's last line, where YouTube shows up to three above the title; `tags`
 comma-separated string) go to YouTube's tags beside the retry tag. A scheduled video stays
 private until its time, then goes public, so a schedule needs `visibility: public`.
 
+A `comment` (a param, the metadata's, or the gate's edit) is posted on the video once it is up
+(`commentThreads.insert`, 50 quota units), answered as `comments` (its id) or `comment_failed`
+(why), which never fails the post. It needs the `youtube.force-ssl` scope: a sign-in from before
+1.4.0 lacks it and is told to sign in again. A retry that finds its video already up first looks
+for the same text among the video's comments, so it never comments twice.
+
 A retried publish stage calls again with the same `idempotency_key` (the stage id), and the
 first call may have uploaded before it failed. So an upload is tagged `swarmify-<key>`, and
 before uploading the connector reads the channel's latest 50 uploads (`channels.list` mine, then
@@ -53,6 +59,7 @@ UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
+COMMENT_THREADS_URL = "https://www.googleapis.com/youtube/v3/commentThreads"
 ANALYTICS_URL = "https://youtubeanalytics.googleapis.com/v2/reports"
 ANALYTICS_START = "2005-04-23"  # before any video: a video's whole life
 TOKEN = "YOUTUBE_ACCESS_TOKEN"
@@ -73,6 +80,10 @@ API_NOTICE = (
     "YouTube retention is not read: enable the YouTube Analytics API in the Google Cloud"
     " project of the YouTube sign-in."
 )
+COMMENT_SCOPE_FAILED = (
+    "the comment was not posted: the saved sign-in predates the comment permission"
+    " (youtube.force-ssl); sign in to YouTube again on the Connectors page"
+)
 MAX_IDS = 50
 
 VISIBILITIES = ("public", "unlisted", "private")
@@ -82,7 +93,7 @@ HASHTAGS_MAX = 5  # well under YouTube's 60: more reads as spam (research 2026-1
 TAGS_CHARS = 500  # YouTube's limit for all tags together, commas and quotes included
 # Each upload is tagged swarmify-<stage id>.<visit>: about 45 characters with its comma.
 TAGS_ROOM = TAGS_CHARS - 50
-EDITABLE = ("title", "description", "hashtags", "tags")
+EDITABLE = ("title", "description", "hashtags", "tags", "comment")
 _HASHTAG = re.compile(r"^\w+$")
 
 mcp = MCPServer("youtube")
@@ -212,6 +223,12 @@ def preview_of(args: Mapping[str, Any], now: datetime | None = None) -> dict[str
         _field("description", "Description", text),
         _field("hashtags", "Hashtags", hashtag_line(hashes), "The last line."),
         _field("tags", "Tags", ", ".join(keywords)),
+        _field(
+            "comment",
+            "Comment",
+            str(params.get("comment") or "").strip(),
+            "Posted on the video after it is up.",
+        ),
         _field("visibility", "Visibility", visibility),
         _field("made_for_kids", "Made for kids", made_for_kids is True),
         _field("schedule", "When", schedule, when),
@@ -322,7 +339,7 @@ def upload(
     if idempotency_key:
         tag = f"swarmify-{idempotency_key}"
         if done := uploaded_under(http, auth, tag):
-            return answer(done)
+            return {**answer(done), "_found": True}
         keywords.append(tag)  # beside the real tags, never instead
     if keywords:
         snippet["tags"] = keywords
@@ -348,6 +365,54 @@ def upload(
     return answer(sent.json()["id"])
 
 
+def comment_on(
+    http: httpx.Client, env: Mapping[str, str], video_id: str, text: str, retried: bool
+) -> str:
+    """Post `text` as a comment on the video, its id. A retried publish first looks for the
+    same text among the video's comments, so it is never posted twice."""
+    try:
+        return _comment_on(http, _headers(env), video_id, text, retried)
+    except httpx.HTTPError as exc:
+        raise ToolError("posting the comment failed: YouTube could not be reached") from exc
+
+
+def _comment_on(
+    http: httpx.Client, auth: dict[str, str], video_id: str, text: str, retried: bool
+) -> str:
+    if retried:
+        # ponytail: the newest 100 comments; a retry comes soon after the call it repeats.
+        listed = http.get(
+            COMMENT_THREADS_URL,
+            params={"part": "snippet", "videoId": video_id, "maxResults": "100"},
+            headers=auth,
+        )
+        if listed.status_code == 200:
+            for thread in listed.json().get("items", []):
+                top = thread.get("snippet", {}).get("topLevelComment", {})
+                if top.get("snippet", {}).get("textOriginal") == text:
+                    return str(thread.get("id") or top.get("id"))
+        elif listed.status_code != 404:
+            raise _comment_error(listed)
+    top = {"snippet": {"textOriginal": text}}
+    sent = http.post(
+        COMMENT_THREADS_URL,
+        params={"part": "snippet"},
+        headers=auth,
+        json={"snippet": {"videoId": video_id, "topLevelComment": top}},
+    )
+    if sent.status_code != 200:
+        raise _comment_error(sent)
+    answer = sent.json()
+    return str(answer.get("snippet", {}).get("topLevelComment", {}).get("id") or answer["id"])
+
+
+def _comment_error(response: httpx.Response) -> ToolError:
+    why = _reasons(response) if response.status_code == 403 else ""
+    if "insufficientPermissions" in why or "SCOPE_INSUFFICIENT" in why:
+        return ToolError(COMMENT_SCOPE_FAILED)
+    return _error(response, "posting the comment")
+
+
 def publish_fields(
     http: httpx.Client,
     env: Mapping[str, str],
@@ -356,8 +421,9 @@ def publish_fields(
     idempotency_key: str = "",
 ) -> dict[str, Any]:
     """Post exactly the confirmed `fields`: the hashtags as the description's last line, the
-    tags beside the retry tag."""
-    return upload(
+    tags beside the retry tag. Then the `comment`, when there is one: its id, or why it failed,
+    beside the post, which stands either way."""
+    out = upload(
         http,
         env,
         Path(input_path),
@@ -369,6 +435,16 @@ def publish_fields(
         idempotency_key,
         tags(fields.get("tags")),
     )
+    found = out.pop("_found", False)  # an earlier try uploaded it, and may have commented
+    text = str(fields.get("comment") or "").strip()
+    if not text:
+        return out
+    comments, failed = {}, {}
+    try:
+        comments["youtube"] = comment_on(http, env, out["id"], text, found)
+    except ToolError as exc:
+        failed["youtube"] = str(exc)
+    return {**out, "comments": comments, "comment_failed": failed}
 
 
 @mcp.tool(

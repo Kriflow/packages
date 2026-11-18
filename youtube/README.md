@@ -12,8 +12,8 @@ otherwise, so workflows call `youtube` exactly as before. Everything Swarmify kn
 
 One field, **YouTube account** (`youtube`), a Google sign-in (Swarmify's README, OAuth sign-in): Swarmify
 keeps the token set and starts the connector with a current access token as
-`YOUTUBE_ACCESS_TOKEN`. It asks for the `youtube.upload`, `youtube.readonly` and
-`yt-analytics.readonly` scopes, offline access and the consent screen every time, so Google always
+`YOUTUBE_ACCESS_TOKEN`. It asks for the `youtube.upload`, `youtube.readonly`,
+`yt-analytics.readonly` and `youtube.force-ssl` (to post the `comment`) scopes, offline access and the consent screen every time, so Google always
 issues a refresh token.
 
 Once: create a Google Cloud project, enable the YouTube Data API v3 and the YouTube Analytics
@@ -52,6 +52,10 @@ these scopes and is not verified shows an "unverified app" warning at sign-in (A
 to the app) and is capped at 100 users, which a self-hosted Swarmify never nears; its refresh
 tokens do not expire on a timer.
 
+The `comment` needs the `youtube.force-ssl` scope, which before 1.4.0 was not asked for. An
+account signed in earlier still posts; its comment is recorded as failed with "sign in to YouTube
+again", and one sign-in from the Connectors page fixes it.
+
 Retention (YouTube Analytics) needs the `yt-analytics.readonly` scope, which before 1.2.0 was not
 asked for. An account signed in earlier still posts and reads views; the Needs-you page says once
 to sign in again to get retention, and until then only views are recorded.
@@ -74,6 +78,7 @@ to sign in again to get retention, and until then only views are recorded.
       visibility: public               # say it: public, unlisted or private (default private)
       schedule: "+1d 09:00"            # optional, see below; needs public
       made_for_kids: false             # YouTube's COPPA declaration (default false)
+      comment: Name it. Wrong answers only   # optional: commented on the video once it is up
 ```
 
 The `title` and `description` in the `metadata` file's frontmatter (and `hashtags` and `tags`)
@@ -92,7 +97,7 @@ workflow's job, for example the script stage's frontmatter; Swarmify never makes
 
 ## What it answers
 
-- `preview` shows Title, Description, Hashtags, Tags, Visibility, Made for kids, When and Video,
+- `preview` shows Title, Description, Hashtags, Tags, Comment, Visibility, Made for kids, When and Video,
   and every problem that would stop the post: a missing or over-100-character title, an unknown
   visibility, a schedule that is unreadable, has no timezone, has passed or is not public, more
   than five hashtags or one that is not a single word, tags over 450 characters, a description
@@ -105,6 +110,12 @@ workflow's job, for example the script stage's frontmatter; Swarmify never makes
   `publishAt` and YouTube makes it public then. It answers `id`, `url` (`https://youtu.be/<id>`),
   `status` (`published` or `scheduled`), `public` (true for `visibility: public`, scheduled or
   not) and, when scheduled, `scheduled_for` (the `publishAt` time).
+- With a `comment` (a param, the metadata file's `comment`, or the gate's edit), `publish` then
+  posts it on the video (`commentThreads.insert`, 50 quota units) and answers `comments`
+  (`{"youtube": <comment id>}`) or `comment_failed` (`{"youtube": <why>}`); a failed comment
+  never fails the post. A retry that finds its video already up first lists the video's comments
+  and answers the one with the same text instead of posting it again. Pinning it stays manual:
+  YouTube does not pin by API.
 - `outcomes` (the Outcomes Capability, ranked by `views`) answers the view counts and
   visibility (`visible`, true when the privacy status is public, and that status, public,
   unlisted or private, as `visibility_label`) of every post that is a YouTube video: its own posts, and any

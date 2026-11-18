@@ -58,9 +58,15 @@ class FakeMeta:
         self.refused = refused
         self.statuses = statuses or [{"status_code": "FINISHED"}]
         self.requests: list[httpx.Request] = []
+        self.comment_error: dict[str, Any] | None = None  # Meta's error a comment answers
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.url.path.endswith("/comments") and request.method == "POST":
+            if self.comment_error:
+                return httpx.Response(400, json={"error": self.comment_error})
+            on = request.url.path.split("/")[-2]
+            return httpx.Response(200, json={"id": f"{on}_cmt"})
         if self.refused:
             error = {"message": "Error validating access token", "type": "OAuthException"}
             return httpx.Response(400, json={"error": {**error, "code": 190}})
@@ -234,6 +240,7 @@ def test_the_preview_is_what_will_go_out() -> None:
         ("platforms", False),
         ("caption", True),
         ("hashtags", True),
+        ("comment", True),
         ("visibility", False),
         ("schedule", False),
         ("trial", False),
@@ -245,6 +252,7 @@ def test_the_preview_is_what_will_go_out() -> None:
         "platforms": ["instagram"],
         "caption": "Why owls turn",  # the title, as there is no description
         "hashtags": "#owls #birds",
+        "comment": "",
         "visibility": "public",
         "schedule": None,
         "trial": False,
@@ -543,6 +551,68 @@ def test_one_platform_failing_still_answers_the_others_link(video: Path) -> None
         post(FakeMeta([], down=True), video, platforms=["facebook"], title="T")
 
 
+# The comment posted after publish
+
+
+def comments_sent(fake: FakeMeta) -> list[tuple[str, dict[str, str]]]:
+    return [
+        (r.url.path, dict(parse_qsl(r.content.decode())))
+        for r in fake.requests
+        if r.url.path.endswith("/comments")
+    ]
+
+
+def test_the_comment_comes_from_params_metadata_or_the_gate() -> None:
+    assert values(preview(stage(comment="Name it")))["comment"] == "Name it"
+    shown = values(preview(stage(comment="p"), metadata={"comment": "From the script"}))
+    assert shown["comment"] == "From the script"
+    assert values(preview(stage(), edits={"comment": "Edited"}))["comment"] == "Edited"
+
+
+def test_a_comment_is_posted_on_each_platforms_post(video: Path) -> None:
+    fake = FakeMeta([])
+    both = ["instagram", "facebook"]
+    out = post(fake, video, platforms=both, title="Owls", comment="Wrong answers only")
+    assert out["comments"] == {"instagram": "m1_cmt", "facebook": "v1_cmt"}
+    assert out["comment_failed"] == {}
+    assert comments_sent(fake) == [
+        ("/v26.0/m1/comments", {"message": "Wrong answers only"}),
+        ("/v26.0/v1/comments", {"message": "Wrong answers only"}),
+    ]
+    sent = [r for r in fake.requests if r.url.path.endswith("/comments")]
+    assert all(r.headers["authorization"] == "OAuth page-tok-1" for r in sent)
+
+
+def test_without_a_comment_nothing_is_commented(video: Path) -> None:
+    fake = FakeMeta([])
+    out = post(fake, video, title="Owls", comment=" ")
+    assert "comments" not in out and "comment_failed" not in out
+    assert comments_sent(fake) == []
+
+
+def test_a_sign_in_without_the_comment_permission_says_to_sign_in_again(video: Path) -> None:
+    fake = FakeMeta([])
+    fake.comment_error = {
+        "message": "(#10) Application does not have permission for this action",
+        "type": "OAuthException",
+        "code": 10,
+    }
+    out = post(fake, video, title="Owls", comment="Hi")
+    assert out["links"] == {"instagram": "https://www.instagram.com/reel/AbC/"}  # the post stands
+    failed = out["comment_failed"]["instagram"]
+    assert "sign in to Meta again" in failed and "instagram_manage_comments" in failed
+    assert not core_oauth.is_auth_failure(failed)
+    assert out["comments"] == {}
+
+
+def test_any_other_comment_failure_is_recorded_beside_the_post(video: Path) -> None:
+    fake = FakeMeta([])
+    fake.comment_error = {"message": "try later", "code": 2}
+    out = post(fake, video, platforms=["facebook"], title="Owls", comment="Hi")
+    assert out["links"] == {"facebook": "https://www.facebook.com/reel/v1"}
+    assert out["comment_failed"] == {"facebook": "posting the comment failed (400): try later"}
+
+
 # Retries: the record in the stage's folder, named after the Idempotency Key
 
 
@@ -638,6 +708,17 @@ def test_a_retry_after_instagram_posted_and_facebook_failed_redoes_only_facebook
     )
     assert not any("ig1" in r.url.path or "c1" in r.url.path for r in fake.requests)
     assert calls(fake).count(("POST", "/v26.0/p1/video_reels")) == 2  # start and finish
+
+
+def test_a_retry_does_not_comment_twice(run_video: Path) -> None:
+    fake = FakeMeta([], down=True)
+    both = ["instagram", "facebook"]
+    out = retried(fake, run_video, "post", platforms=both, comment="Hi")
+    assert (out["comments"], list(out["failed"])) == ({"instagram": "m1_cmt"}, ["facebook"])
+    fake.down, fake.requests = False, []
+    out = retried(fake, run_video, "post", platforms=both, comment="Hi")
+    assert out["comments"] == {"instagram": "m1_cmt", "facebook": "v1_cmt"}
+    assert comments_sent(fake) == [("/v26.0/v1/comments", {"message": "Hi"})]
 
 
 def test_a_fresh_stage_never_reads_another_stages_record(run_video: Path) -> None:
@@ -826,10 +907,10 @@ def registry(data: Path) -> Connectors:
 
 def test_the_installed_package_answers_over_stdio_in_its_sandbox(tmp_path: Path) -> None:
     connectors = registry(tmp_path)
-    assert connectors.install_defaults()["meta"] == "1.0.3"
+    assert connectors.install_defaults()["meta"] == "1.1.0"
     connectors.offer_defaults("w")
     found = connectors.find("w", "meta")
-    assert found is not None and found.version == "1.0.3"
+    assert found is not None and found.version == "1.1.0"
     assert sorted(t.name for t in connectors.transport.list_tools(found, {})) == [
         "account",
         "outcomes",

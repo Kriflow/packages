@@ -28,6 +28,11 @@ Facebook Page: the Page's Reels upload, `video_reels` with `upload_phase=start`,
 rupload.facebook.com, then `upload_phase=finish` with the description and a `video_state` of
 PUBLISHED, DRAFT or SCHEDULED (with `scheduled_publish_time`).
 
+With a `comment` (a param, the metadata's, or the gate's edit) each Platform's post then gets it
+as a comment (`<post>/comments`), answered as each comment's id (`comments`) or failure
+(`comment_failed`), which never fails the post; a missing comment permission says to sign in
+again. The comment id is kept in the record below, so a retry never comments twice.
+
 Meta has no idempotency key, so a retried stage (the same `idempotency_key`) reads a record the
 first try left in the stage's folder of the run, `meta-<key>.json`: each Platform's container or
 video ID, kept once its file is uploaded, and its post once finished. A finished post is answered
@@ -66,8 +71,13 @@ PAGE_FIELDS = "id,name,access_token,instagram_business_account"
 RUPLOAD = "https://rupload.facebook.com"
 
 PLATFORMS = ("instagram", "facebook")
+COMMENT_PERMISSION_FAILED = (
+    "the comment was not posted: the sign-in lacks the permission to comment"
+    " (instagram_manage_comments on Instagram, pages_manage_engagement on Facebook); add it to"
+    " the Meta app's login configuration, then sign in to Meta again on the Connectors page"
+)
 VISIBILITIES = ("public", "draft")
-EDITABLE = ("caption", "hashtags")
+EDITABLE = ("caption", "hashtags", "comment")
 CAPTION_MAX = 2_200  # Instagram's limits for a caption, its hashtags and @mentions
 HASHTAGS_MAX = 30
 MENTIONS_MAX = 20
@@ -350,7 +360,11 @@ def preview_of(args: Mapping[str, Any], now: datetime | None = None) -> dict[str
     edits = {k: v for k, v in (args.get("edits") or {}).items() if k in EDITABLE}
     params = {
         **(args.get("params") or {}),
-        **{k: metadata[k] for k in ("title", "description", "hashtags") if metadata.get(k)},
+        **{
+            k: metadata[k]
+            for k in ("title", "description", "hashtags", "comment")
+            if metadata.get(k)
+        },
     }
     raw = params.get("platforms") or list(PLATFORMS)
     platforms = [str(p) for p in (raw if isinstance(raw, list) else [raw])]
@@ -358,6 +372,7 @@ def preview_of(args: Mapping[str, Any], now: datetime | None = None) -> dict[str
     text = str(params.get("description") or params.get("title") or "").strip()
     text = str(edits.get("caption", text)).strip()
     tagged = hashtags(edits.get("hashtags", params.get("hashtags")))
+    comment = str(edits.get("comment", params.get("comment")) or "").strip()
     caption = full_caption(text, tagged)
     now = now or datetime.now(UTC)
     schedule, bad_schedule = _schedule(params.get("schedule"), now)
@@ -385,6 +400,7 @@ def preview_of(args: Mapping[str, Any], now: datetime | None = None) -> dict[str
         _field("platforms", "Platforms", platforms),
         _field("caption", "Caption", text, "The description, or the title without one."),
         _field("hashtags", "Hashtags", hashtag_line(tagged), "After a blank line."),
+        _field("comment", "Comment", comment, "Posted on each post once it is up."),
         _field("visibility", "Visibility", visibility),
         _field("schedule", "When", schedule, "" if schedule else "Right after confirming."),
         _field("trial", "Trial Reel", trial is True, "Shown to non-followers first."),
@@ -579,6 +595,27 @@ def post_to_facebook(
     return {"id": reel, "url": url}
 
 
+def comment_on(http: httpx.Client, token: str, post: str, text: str) -> str:
+    """Post `text` as a comment on an Instagram media or a Facebook video, its id."""
+    try:
+        sent = http.post(
+            f"{GRAPH}/{post}/comments",
+            data={"message": text},
+            headers={"Authorization": f"OAuth {token}"},
+        )
+    except httpx.HTTPError as exc:
+        raise ToolError("posting the comment failed: Meta could not be reached") from exc
+    if sent.status_code == 200:
+        return str(sent.json()["id"])
+    try:
+        code = (sent.json().get("error") or {}).get("code")
+    except (ValueError, AttributeError):
+        code = None
+    if code == 10 or (isinstance(code, int) and 200 <= code <= 299):  # Meta's permission codes
+        raise ToolError(COMMENT_PERMISSION_FAILED)
+    raise ToolError(str(_error(sent, "posting the comment")).removeprefix("auth_failed: "))
+
+
 def record_of(input_path: Path, idempotency_key: str) -> Path | None:
     """Where a stage keeps what it posted: `meta-<key>.json` in its folder of the run its input
     is in (`<world>/runs/<run>/<stage>`, the one folder it may write). The key is the stage id,
@@ -613,6 +650,9 @@ def publish_fields(
     )
     links: dict[str, str] = {}
     failed: dict[str, str] = {}
+    text = str(fields.get("comment") or "").strip()
+    comments: dict[str, str] = {}
+    comment_failed: dict[str, str] = {}
     post_id = None
     for platform in fields.get("platforms") or PLATFORMS:
         kept = record.setdefault(platform, {})
@@ -634,6 +674,14 @@ def publish_fields(
             links[platform], post_id = posted["url"], post_id or posted["id"]
         except ToolError as exc:
             failed[platform] = str(exc)
+            continue
+        if text:  # the post stands whatever happens to its comment
+            try:
+                if not kept.get("comment"):  # a retry never comments twice
+                    keep(comment=comment_on(http, env[TOKEN], posted["id"], text))
+                comments[platform] = kept["comment"]
+            except ToolError as exc:
+                comment_failed[platform] = str(exc)
     if not links:
         raise ToolError("; ".join(f"{p}: {e}" for p, e in failed.items()))
     when = fields.get("schedule")
@@ -644,6 +692,7 @@ def publish_fields(
         "failed": failed,
         "public": fields.get("visibility") != "draft",  # a draft only the Page's admins see
         **({"scheduled_for": str(when)} if when else {}),
+        **({"comments": comments, "comment_failed": comment_failed} if text else {}),
     }
 
 

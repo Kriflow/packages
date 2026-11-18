@@ -69,6 +69,7 @@ def test_the_preview_is_what_will_go_out() -> None:
         ("description", "Description", True),
         ("hashtags", "Hashtags", True),
         ("tags", "Tags", True),
+        ("comment", "Comment", True),
         ("visibility", "Visibility", False),
         ("made_for_kids", "Made for kids", False),
         ("schedule", "When", False),
@@ -79,13 +80,14 @@ def test_the_preview_is_what_will_go_out() -> None:
         "description": "d",
         "hashtags": "",
         "tags": "",
+        "comment": "",
         "visibility": "public",
         "made_for_kids": False,
         "schedule": "2026-11-03T09:00:00Z",
         "video": "short.mp4",
     }
-    assert shown["fields"][6]["hint"] == "Private until then, then public."
-    assert preview(stage())["fields"][6]["hint"] == "Right after confirming."
+    assert shown["fields"][7]["hint"] == "Private until then, then public."
+    assert preview(stage())["fields"][7]["hint"] == "Right after confirming."
 
 
 def test_metadata_wins_over_params_and_edits_win_over_both() -> None:
@@ -188,13 +190,40 @@ def test_hashtags_and_tags_past_the_limits_are_problems(
 class FakeGoogle:
     """`uploads` are the channel's videos, newest first, as `videos.list` part snippet answers."""
 
-    def __init__(self, upload_status: int = 200, uploads: list[dict] | None = None) -> None:
+    def __init__(
+        self,
+        upload_status: int = 200,
+        uploads: list[dict] | None = None,
+        comment_error: tuple[int, dict[str, Any]] | None = None,
+        comments: list[str] | None = None,
+        comment_unreachable: bool = False,
+    ) -> None:
         self.requests: list[httpx.Request] = []
         self.upload_status = upload_status
         self.uploads = uploads or []
+        self.comment_error = comment_error  # (status, Google's error) commentThreads answers
+        self.comments = comments or []  # the texts of comments already on the video
+        self.comment_unreachable = comment_unreachable  # commentThreads drops the connection
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.url.path.endswith("/commentThreads"):
+            if self.comment_unreachable:
+                raise httpx.ConnectError("connection dropped", request=request)
+            if self.comment_error:
+                status, error = self.comment_error
+                return httpx.Response(status, json={"error": error})
+            if request.method == "GET":
+                items = [
+                    {
+                        "id": f"cmt0{n}",
+                        "snippet": {"topLevelComment": {"snippet": {"textOriginal": t}}},
+                    }
+                    for n, t in enumerate(self.comments)
+                ]
+                return httpx.Response(200, json={"items": items})
+            top = {"id": "cmt1", "snippet": json.loads(request.content)["snippet"]}
+            return httpx.Response(200, json={"id": "cmt1", "snippet": {"topLevelComment": top}})
         if request.url.path.endswith("/channels"):
             playlists = {"relatedPlaylists": {"uploads": "UU1"}}
             return httpx.Response(200, json={"items": [{"contentDetails": playlists}]})
@@ -576,6 +605,95 @@ def test_the_channel_tool_names_the_channel_the_account_posts_to() -> None:
 # The Manifest, and the package installed as Swarmify does at startup
 
 
+# The comment posted after publish
+
+
+def comment_posts(google: FakeGoogle) -> list[dict[str, Any]]:
+    return [
+        json.loads(r.content)
+        for r in google.requests
+        if r.method == "POST" and r.url.path.endswith("/commentThreads")
+    ]
+
+
+def test_the_comment_comes_from_params_metadata_or_the_gate() -> None:
+    assert values(preview(stage(comment="Name it")))["comment"] == "Name it"
+    shown = values(preview(stage(comment="p"), metadata={"comment": "From the script"}))
+    assert shown["comment"] == "From the script"
+    assert values(preview(stage(comment="p"), edits={"comment": "Edited"}))["comment"] == "Edited"
+
+
+def test_a_comment_is_posted_on_the_video_just_uploaded(video: Path) -> None:
+    google = FakeGoogle()
+    out = post(google, video, comment="Wrong answers only")
+    assert (out["id"], out["comments"], out["comment_failed"]) == (
+        "vid1",
+        {"youtube": "cmt1"},
+        {},
+    )
+    (sent,) = [r for r in google.requests if r.url.path.endswith("/commentThreads")]
+    assert sent.url.params["part"] == "snippet"
+    assert sent.headers["authorization"] == "Bearer tok"
+    assert comment_posts(google) == [
+        {
+            "snippet": {
+                "videoId": "vid1",
+                "topLevelComment": {"snippet": {"textOriginal": "Wrong answers only"}},
+            }
+        }
+    ]
+
+
+def test_without_a_comment_nothing_is_commented(video: Path) -> None:
+    google = FakeGoogle()
+    out = post(google, video, comment="  ")
+    assert "comments" not in out and "comment_failed" not in out
+    assert not any(r.url.path.endswith("/commentThreads") for r in google.requests)
+
+
+def test_a_sign_in_without_the_comment_scope_says_to_sign_in_again(video: Path) -> None:
+    scope = {
+        "code": 403,
+        "message": "Request had insufficient authentication scopes.",
+        "errors": [{"reason": "insufficientPermissions"}],
+        "details": [{"reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}],
+    }
+    out = post(FakeGoogle(comment_error=(403, scope)), video, comment="Hi")
+    assert (out["id"], out["url"], out["comments"]) == ("vid1", "https://youtu.be/vid1", {})
+    failed = out["comment_failed"]["youtube"]
+    assert "sign in to YouTube again" in failed and "youtube.force-ssl" in failed
+    assert not core_oauth.is_auth_failure(failed)  # the post stands, only the comment failed
+
+
+def test_any_other_comment_failure_is_recorded_beside_the_post(video: Path) -> None:
+    disabled = {"message": "Comments are disabled", "errors": [{"reason": "commentsDisabled"}]}
+    out = post(FakeGoogle(comment_error=(403, disabled)), video, comment="Hi")
+    assert out["id"] == "vid1"
+    assert out["comment_failed"] == {
+        "youtube": "posting the comment failed (403): Comments are disabled"
+    }
+
+
+def test_a_dropped_connection_on_the_comment_is_recorded_beside_the_post(video: Path) -> None:
+    out = post(FakeGoogle(comment_unreachable=True), video, comment="Hi")
+    assert (out["id"], out["comments"]) == ("vid1", {})
+    assert out["comment_failed"] == {
+        "youtube": "posting the comment failed: YouTube could not be reached"
+    }
+
+
+def test_a_retry_does_not_comment_twice(video: Path) -> None:
+    earlier = {"id": "vid0", "snippet": {"tags": ["swarmify-stage_1"]}}
+    google = FakeGoogle(uploads=[earlier], comments=["Other", "Hi"])
+    out = post(google, video, "stage_1", comment="Hi")
+    assert (out["id"], out["comments"]) == ("vid0", {"youtube": "cmt01"})
+    assert comment_posts(google) == []
+    listed = google.requests[-1]
+    assert (listed.method, listed.url.params["videoId"]) == ("GET", "vid0")
+    google = FakeGoogle(uploads=[earlier])  # the earlier try never got to the comment
+    assert post(google, video, "stage_1", comment="Hi")["comments"] == {"youtube": "cmt1"}
+
+
 def test_the_manifest_declares_a_google_sign_in_with_todays_scopes() -> None:
     m = read_manifest(HERE)
     assert (m["name"], m["kind"], m["stage_types"]) == ("youtube", "publish", ["connector"])
@@ -585,6 +703,7 @@ def test_the_manifest_declares_a_google_sign_in_with_todays_scopes() -> None:
         "https://www.googleapis.com/auth/youtube.upload",
         "https://www.googleapis.com/auth/youtube.readonly",
         "https://www.googleapis.com/auth/yt-analytics.readonly",
+        "https://www.googleapis.com/auth/youtube.force-ssl",  # comments
     ]
     params = {"access_type": "offline", "prompt": "consent"}  # a refresh token, every sign-in
     assert account["oauth"]["authorize_params"] == params
@@ -630,7 +749,7 @@ def v1(tmp_path: Path, provider: FakeProvider) -> Callable[[Any], Connectors]:
 
     def make(transport: Any) -> Connectors:
         connectors = registry(tmp_path, transport)
-        assert connectors.install_defaults()["youtube"] == "1.3.1"
+        assert connectors.install_defaults()["youtube"] == "1.4.0"
         connectors.offer_defaults("w")
         return connectors
 
@@ -641,13 +760,13 @@ def test_a_v1_sign_in_is_carried_over_so_no_new_sign_in_is_needed(
     v1: Callable[[Any], Connectors], provider: FakeProvider, tmp_path: Path
 ) -> None:
     connectors = v1(FakeTransport())
-    folder = tmp_path / "packages" / "youtube" / "1.3.1"
+    folder = tmp_path / "packages" / "youtube" / "1.4.0"
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "youtube.py").is_file()
     shared, _ = connectors.setups.values("youtube", "w")
     assert (shared["youtube_client_id"], shared["youtube_client_secret"]) == ("yt-app", "yt-secret")
     assert shared["youtube"]["refresh_token"] == "rt-from-v1"
     youtube = connectors.find("w", "youtube")
-    assert youtube is not None and youtube.version == "1.3.1"
+    assert youtube is not None and youtube.version == "1.4.0"
     assert connectors.missing(youtube) == [] and connectors.sign_in_needed(youtube) == []
 
     env = connectors._env(youtube)  # the first start refreshes the V1 token
@@ -668,6 +787,7 @@ def test_the_installed_package_previews_and_publishes_over_stdio(
         "description": "Why owls turn.",
         "hashtags": "#owls",
         "tags": "owls, owl facts",
+        "comment": "",
         "visibility": "public",
         "made_for_kids": False,
         "schedule": "2099-01-01T09:00:00Z",

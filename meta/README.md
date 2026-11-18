@@ -25,11 +25,12 @@ back their views as Outcomes.
       trial: false          # true: a Trial Reel, shown to non-followers first
       visibility: public    # draft: a Facebook draft only the Page's admins see
       schedule: +1d 09:00   # Facebook only, 10 minutes to 29 days ahead
+      comment: Name it. Wrong answers only   # optional: commented on each post once it is up
 ```
 
 The caption is the description, or the title when there is none, then a blank line and the
 hashtags as one `#a #b` line. The metadata file's frontmatter wins over the params; `tags` are
-ignored. The gate shows the caption and hashtags to edit, and the Platforms, visibility, schedule,
+ignored. The gate shows the caption, hashtags and comment to edit, and the Platforms, visibility, schedule,
 Trial Reel, share to feed, cover and video as they will go. The connector never adds text of its
 own.
 
@@ -63,6 +64,14 @@ One publish record holds each Platform's link under `links` and each failure und
 is Instagram's media ID, or Facebook's video ID when Instagram did not post. The stage fails only
 when no Platform posted.
 
+With a `comment` (a param, the metadata file's `comment`, or the gate's edit), each Platform's
+post gets it as a comment right after it is up: `POST <media id>/comments` on Instagram,
+`POST <video id>/comments` on Facebook, with the text as `message`. The answer records each
+comment's ID under `comments` (by Platform) and each failure under `comment_failed`; a failed
+comment never fails the post. The comment ID is kept in the stage's record too, so a retry never
+comments twice. A sign-in without the permission to comment answers "sign in to Meta again" in
+`comment_failed`. Pinning it stays manual: neither platform pins by API.
+
 Meta has no idempotency key, so a stage keeps what it posted in `meta-<key>.json` in its folder of
 the run (`<world>/runs/<run>/<stage>/`), named after the stage's Idempotency Key: each Platform's
 container or video ID once its file is uploaded (Facebook's from the start), then its post once
@@ -93,7 +102,8 @@ shared:
 
 Once: create a Meta app of type Business with Facebook Login for Business, add a login
 configuration for a user access token with `pages_show_list`, `pages_read_engagement`,
-`pages_manage_posts`, `instagram_basic`, `instagram_content_publish` and `read_insights` (plus
+`pages_manage_posts`, `instagram_basic`, `instagram_content_publish`, `read_insights`,
+`instagram_manage_comments` and `pages_manage_engagement` (the last two for the `comment`; plus
 `business_management` when the app belongs to a business portfolio), and add the redirect URI the
 Connectors page shows, `<the address you open Swarmify at>/api/setup/oauth/callback`, to Valid
 OAuth Redirect URIs. While the app is in Development mode, everyone with a role on it can grant
@@ -105,7 +115,9 @@ app's ID and secret as **Meta account client ID** and **client secret** (all sha
 world), and **Sign in** in each world.
 
 A token Meta refuses (error code 190, or an `OAuthException`) fails the call with `auth_failed`
-and marks the account **Needs sign-in**; sign in again from the Connectors page.
+and marks the account **Needs sign-in**; sign in again from the Connectors page. Before 1.1.0
+the login configuration needed no comment permissions: add `instagram_manage_comments` and
+`pages_manage_engagement` to it and sign in again once, or the `comment` is recorded as failed.
 
 ## What it answers
 

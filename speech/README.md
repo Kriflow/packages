@@ -180,6 +180,42 @@ its Setup, a JSON schema of its params, inputs, outputs, the `script` type, its 
   for 17.7 s of speech, Chatterbox Turbo 33 s for 20.6 s, which flagged "sleep all winter
   long." running into "Good night" as the spike heard it.
 
+## Vocal effects
+
+With `params.effect` the speech connector voices a short non-word utterance instead of a script
+("Uhhhhhhh", a moan, a groan) and processes each take as declared, so a meme-style sound comes
+from a voice the world may use rather than a downloaded clip.
+
+```yaml
+- connector: uhh
+  calls: speech
+  input: need.md               # its text is the utterance, unless effect.text names one
+  output: uhh.json
+  params:
+    voice: narrator
+    effect: {text: Uhhhhhhh, pitch: -3, room: 0.3, cut: 2.5, min_length: 1, takes: 3, seed: 7}
+```
+
+- `pitch` is semitones (-12 to 12). `speed` is the playback rate (0.5 to 2); when not given it
+  follows the pitch as tape does, 2^(pitch/12), so `pitch: -3` alone is about 19% slower. Given
+  apart from pitch, the take is time-stretched (WSOLA) before it is resampled.
+- `room` (0 to 1) adds a small room's two echoes, at 45 and 80 ms. `cut` (0.1 to 10 s) ends the
+  clip hard on a 20 ms fade. The silence the engine leaves around the utterance is trimmed first.
+- An engine's take of a short utterance varies a lot in length from seed to seed (Chatterbox
+  gave 0.1 to 1.9 s for one "Uhhhhhhh"). `min_length` (seconds) voices a take shorter than it
+  again with the next seed, up to 4 tries, keeps the longest and records its seed; one still
+  short is named in `warnings`.
+- `takes` is a count (1 to 8), each with the next seed, or a list of each take's own settings
+  over the effect's (`text`, `seed`, `pitch`, `speed`, `room`, `cut`, `min_length`). A take
+  without a seed gets a random one, recorded, so every take can be made again.
+- The voice is resolved per engine as for a script (Voices, below), with the voice's options;
+  the engines are tried in order, and one that fails has the whole effect redone on the next.
+  No alignment is asked for.
+- The output, `uhh.json` here, holds `engine`, `voice`, `chosen`, `options`, `warnings` and per
+  take its `file`, `duration` and `settings`; the takes are beside it as `uhh-1.wav`, `uhh-2.wav`
+  and so on, replacing a rerun's. Settings out of range or of the wrong kind are refused before
+  any engine is asked, naming the setting and the take.
+
 ## Voices
 
 A voice is chosen per piece of content, and only the speech connector knows what a voice is. A

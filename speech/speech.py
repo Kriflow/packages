@@ -611,6 +611,18 @@ def take_timings(
     }
 
 
+def _speak(http: httpx.Client, base: str, body: dict[str, Any], clip: bytes | None) -> bytes:
+    """The engine's `/v1/audio/speech` of `body`, with a `clip` going up as `reference`."""
+    if clip is None:
+        r = http.post(f"{base}/v1/audio/speech", json=body)
+    else:
+        form = {k: str(v) for k, v in body.items()}
+        files = {"reference": ("reference.wav", clip, "audio/wav")}
+        r = http.post(f"{base}/v1/audio/speech", data=form, files=files)
+    r.raise_for_status()
+    return r.content
+
+
 def _take(
     http: httpx.Client,
     base: str,
@@ -638,18 +650,34 @@ def _take(
         answer = r.json()
         audio, stamps = base64.b64decode(answer["audio"]), answer["timestamps"]
     else:
-        if clip is None:
-            r = http.post(f"{base}/v1/audio/speech", json=body)
-        else:
-            form = {k: str(v) for k, v in body.items()}
-            files = {"reference": ("reference.wav", clip, "audio/wav")}
-            r = http.post(f"{base}/v1/audio/speech", data=form, files=files)
-        r.raise_for_status()
-        audio = r.content
+        audio = _speak(http, base, body, clip)
         a = http.post(f"{base}/v1/align", data={"text": text}, files={"file": ("take.wav", audio)})
         a.raise_for_status()
         stamps = a.json()["timestamps"]
     return audio, [(str(t["word"]), float(t["start_time"]), float(t["end_time"])) for t in stamps]
+
+
+def _speaker(
+    http: httpx.Client, base: str, voice: str, voices: list[dict[str, Any]]
+) -> tuple[set[str], str | None, str, bytes | None, dict[str, Any]]:
+    """How the engine at `base` speaks `voice`: the tags it hears, the voice that speaks (a
+    catalog name, the engine's own, or None for its default), the engine voice to ask for, the
+    clip to send and the options with it (`resolve`)."""
+    health = _get(http, f"{base}/health")
+    tags, clips = _words(health.get("tags")), health.get("clips") is True
+    chosen = next((v for v in voices if v["name"] == voice), None)
+    if chosen is None:
+        return tags, voice or None, voice, None, {}
+    # an engine has a preset when it lists it, as Kokoro-FastAPI's voices do
+    presets = (
+        voice_names(_get(http, f"{base}/v1/audio/voices").get("voices"))
+        if any(v["preset"] for v in voices)
+        else set()
+    )
+    speaker = resolve(chosen, voices, clips, presets)
+    if speaker and speaker["clip"] and clips:
+        return tags, speaker["name"], "", Path(speaker["clip"]).read_bytes(), speaker["options"]
+    return tags, (speaker or {}).get("name"), (speaker or {}).get("preset") or "", None, {}
 
 
 def voice_run(
@@ -666,27 +694,10 @@ def voice_run(
     resolved per engine (`resolve`), or else is the engine's own voice; "" is the engine's
     default. Raises ToolError naming each engine's failure."""
     voices = voices or []
-    chosen = next((v for v in voices if v["name"] == voice), None)
     failures, on_gpu = [], gpu_engines()
     for base in engines:
         try:
-            health = _get(http, f"{base}/health")
-            tags, clips = _words(health.get("tags")), health.get("clips") is True
-            spoke, own, clip, options = (voice or None), voice, None, {}
-            if chosen is not None:
-                # an engine has a preset when it lists it, as Kokoro-FastAPI's voices do
-                presets = (
-                    voice_names(_get(http, f"{base}/v1/audio/voices").get("voices"))
-                    if any(v["preset"] for v in voices)
-                    else set()
-                )
-                speaker = resolve(chosen, voices, clips, presets)
-                spoke, own = (speaker or {}).get("name"), ""
-                if speaker and speaker["clip"] and clips:
-                    clip = Path(speaker["clip"]).read_bytes()
-                    options = speaker["options"]
-                elif speaker:
-                    own = speaker["preset"]
+            tags, spoke, own, clip, options = _speaker(http, base, voice, voices)
             takes = []
             for scene in scenes:
                 say = " ".join(for_engine(line["say"], tags) for line in scene["lines"])
@@ -698,6 +709,278 @@ def voice_run(
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             failures.append(f"{base}: {type(exc).__name__}: {exc}")
     raise ToolError("no speech engine voiced the script. " + "; ".join(failures))
+
+
+# The vocal-effect mode: a short non-word utterance ("uhhh", a moan, a groan) in a voice, each
+# take processed as its settings declare, so a sound effect comes from a voice we may use.
+
+EFFECT: dict[str, tuple[float, float, str]] = {
+    "pitch": (-12, 12, " semitones"),
+    "speed": (0.5, 2, ""),
+    "room": (0, 1, ""),
+    "cut": (0.1, 10, " seconds"),
+    "min_length": (0.1, 10, " seconds"),
+}
+"""An effect's processing settings and their ranges: `pitch` in semitones, `speed` the playback
+rate (tape-style, 2^(pitch/12), when not given, so -3 is about 19% slower), `room` the level of
+two short echoes, `cut` the second at which the clip ends hard, `min_length` the seconds a take
+must last, else it is voiced again with the next seed."""
+MAX_TAKES, MAX_UTTERANCE, TRIES = 8, 80, 4
+"""TRIES: the voicings a take gets to reach its `min_length`; the longest is kept."""
+ECHOES = (45.0, 80.0)
+"""Milliseconds of the room's two echoes; their levels are `room` x 0.5 and x 0.3."""
+FADE = 0.02
+"""Seconds of the fade a hard cut ends on, short enough to sound like a cut, not a fade."""
+QUIET = 0.005
+"""RMS (of full scale, about -46 dBFS) under which the edges of a take are trimmed as silence:
+below SILENCE, so a soft "uhh" keeps its tail (Chatterbox's floor is about -64 dBFS)."""
+
+
+def _trimmed(x: list[float], rate: int) -> list[float]:
+    """`x` from its first to its last 10 ms window louder than QUIET, 10 ms kept each side."""
+    n = max(1, round(rate * WINDOW))
+    loud = [
+        i
+        for i in range(0, len(x), n)
+        if math.sqrt(sum(v * v for v in x[i : i + n]) / len(x[i : i + n])) > QUIET * 32768
+    ]
+    return x[max(0, loud[0] - n) : loud[-1] + 2 * n] if loud else x
+
+
+def _stretched(x: list[float], rate: int, factor: float) -> list[float]:
+    """`x` made `factor` times as long at the same pitch: WSOLA, 40 ms Hann frames overlapped by
+    half, each taken where it best continues the last (searched within a quarter frame)."""
+    # ponytail: plain WSOLA for a held note; a phase vocoder if speech-length stretches warble.
+    n = max(4, round(rate * 0.04)) // 2 * 2
+    hop, reach, step = n // 2, n // 4, max(1, n // 160)
+    window = [0.5 - 0.5 * math.cos(2 * math.pi * i / n) for i in range(n)]
+    x = x + [0.0] * (2 * n)
+    out = [0.0] * (round((len(x) - 2 * n) * factor) + n)
+    at = 0
+    for k in range(len(out) // hop - 1):
+        frame = x[at : at + n]
+        for i, (v, w) in enumerate(zip(frame, window, strict=False)):
+            out[k * hop + i] += v * w
+        follow = x[at + hop : at + hop + n : step]
+        aim = round((k + 1) * hop / factor)
+        lo, hi = max(0, aim - reach), min(len(x) - n, aim + reach)
+        if hi < lo:
+            break
+        at = max(
+            range(lo, hi + 1, step),
+            key=lambda c: sum(map(float.__mul__, x[c : c + n : step], follow)),
+        )
+    return out[: round((len(x) - 2 * n) * factor)]
+
+
+def process(
+    samples: array,
+    rate: int,
+    pitch: float = 0,
+    speed: float | None = None,
+    room: float = 0,
+    cut: float | None = None,
+    trim: bool = True,
+) -> array:
+    """A take processed as an effect: the silence around it trimmed, pitched `pitch` semitones
+    at the playback rate `speed` (tape-style, 2^(pitch/12), when None), two room echoes at
+    `room`, and a hard cut at `cut` seconds with a FADE."""
+    x = [float(v) for v in samples]
+    if trim:
+        x = _trimmed(x, rate)
+    ratio = 2 ** (pitch / 12)
+    if speed is not None and abs(ratio / speed - 1) > 1e-3:
+        x = _stretched(x, rate, ratio / speed)
+    if ratio != 1:  # resampled: pitch and speed both move by `ratio`
+        # ponytail: linear interpolation; a windowed-sinc resampler if a pitch up aliases.
+        last = len(x) - 1
+        x = [
+            x[j] + (x[min(j + 1, last)] - x[j]) * (p - j)
+            for i in range(int(last / ratio) + 1)
+            for p in (i * ratio,)
+            for j in (int(p),)
+        ]
+    if room:
+        delays = [round(ms * rate / 1000) for ms in ECHOES]
+        dry = x + [0.0] * delays[-1]
+        x = list(dry)
+        for d, level in zip(delays, (0.5, 0.3), strict=True):
+            for i in range(d, len(x)):
+                x[i] += room * level * dry[i - d]
+    if cut is not None and len(x) > (end := round(cut * rate)):
+        fade = max(1, round(FADE * rate))
+        x = x[:end]
+        for i in range(fade):
+            x[end - fade + i] *= (fade - 1 - i) / fade
+    return array("h", (max(-32768, min(32767, round(v))) for v in x))
+
+
+def encode(samples: array, rate: int) -> bytes:
+    """16-bit mono WAV bytes of `samples`."""
+    data = array("h", samples)
+    if sys.byteorder == "big":
+        data.byteswap()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(data.tobytes())
+    return buf.getvalue()
+
+
+def effect_takes(settings: Any, utterance: str) -> list[dict[str, Any]]:
+    """Each take's settings from an effect's: `text` (else `utterance`, the input's), `seed`,
+    pitch, speed, room and cut, and `takes`, a count or a list of each take's own settings over
+    them. A count numbers the seeds on from `seed`; a take without one gets a random seed, so
+    each is repeatable. Raises ValueError naming what is wrong."""
+    if not isinstance(settings, dict):
+        raise ValueError("effect is an object of settings")
+    takes: Any = settings.get("takes", 1)
+    if isinstance(takes, int) and not isinstance(takes, bool) and 1 <= takes <= MAX_TAKES:
+        seed: Any = settings.get("seed")
+        numbered = isinstance(seed, int) and not isinstance(seed, bool)
+        each: list[Any] = [{"seed": seed + n} if numbered else {} for n in range(takes)]
+    elif isinstance(takes, list) and 1 <= len(takes) <= MAX_TAKES:
+        each = takes
+    else:
+        raise ValueError(
+            f"takes is 1 to {MAX_TAKES}, or a list of 1 to {MAX_TAKES} takes' settings,"
+            f" got {json.dumps(takes)[:40]}"
+        )
+    base = {"text": utterance, "seed": None, "pitch": 0, "speed": None, "room": 0.0}
+    base |= {"cut": None, "min_length": None}
+    base |= {k: v for k, v in settings.items() if k != "takes"}
+    if problem := _bad_effect(base):
+        raise ValueError(problem)
+    out = []
+    for n, own in enumerate(each, 1):
+        if not isinstance(own, dict):
+            raise ValueError(f"take {n} is not an object of settings")
+        take = {**base, **own}
+        if problem := _bad_effect(take):
+            raise ValueError(f"take {n}: {problem}")
+        take["text"] = " ".join(take["text"].split())
+        if take["seed"] is None:
+            take["seed"] = secrets.randbelow(2**31 - TRIES)
+        if take["speed"] is None:
+            take["speed"] = round(2 ** (take["pitch"] / 12), 3)
+        out.append(take)
+    return out
+
+
+def _bad_effect(take: dict[str, Any]) -> str:
+    if unknown := sorted(set(take) - {"text", "seed", *EFFECT}):
+        return f"effect does not take {unknown[0]}"
+    text = take["text"]
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_UTTERANCE:
+        return f"the effect needs a short utterance, at most {MAX_UTTERANCE} characters"
+    seed = take["seed"]
+    if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+        return f"seed is a whole number, got {seed!r}"
+    for key, (low, high, unit) in EFFECT.items():
+        value = take[key]
+        if value is None and key != "pitch":
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not low <= value <= high
+        ):
+            return f"{key} is {low:g} to {high:g}{unit}, got {value!r}"
+    return ""
+
+
+def effect_run(
+    http: httpx.Client,
+    takes: list[dict[str, Any]],
+    engines: list[str],
+    voice: str = "",
+    voices: list[dict[str, Any]] | None = None,
+) -> tuple[str, str | None, dict[str, Any], list[bytes], list[str]]:
+    """Every take voiced and processed by the first engine that voices them all, as `voice_run`
+    voices a script: the engine, the voice that spoke, its options, each take's WAV and a
+    warning for each take that stayed under its `min_length`. A take under it is voiced again
+    with the next seed, up to TRIES times, and the longest kept, its seed in its settings.
+    Raises ToolError naming each engine's failure."""
+    failures, on_gpu = [], gpu_engines()
+    for base in engines:
+        try:
+            _, spoke, own, clip, options = _speaker(http, base, voice, voices or [])
+            made, seeds, warnings = [], [], []
+            for n, take in enumerate(takes, 1):
+                tried: list[tuple[int, int, bytes]] = []
+                for seed in range(take["seed"], take["seed"] + TRIES):
+                    body: dict[str, Any] = {"model": "tts-1", "input": take["text"],
+                                            "response_format": "wav", **options,
+                                            "seed": seed}  # fmt: skip
+                    if own:
+                        body["voice"] = own
+                    with _slot("gpu", _waits) if base in on_gpu else contextlib.nullcontext():
+                        samples, rate = decode(_speak(http, base, body, clip))
+                    settings = {k: take[k] for k in ("speed", "room", "cut")}
+                    out = process(samples, rate, take["pitch"], **settings)
+                    tried.append((len(out), seed, encode(out, rate)))
+                    if len(out) >= (take["min_length"] or 0) * rate:
+                        break
+                else:
+                    long = f"min_length {take['min_length']:g} s"
+                    warnings.append(f"take {n} stays under {long} after {TRIES} tries")
+                _, seed, audio = max(tried, key=lambda t: t[0])
+                made.append(audio)
+                seeds.append(seed)
+            for take, seed in zip(takes, seeds, strict=True):
+                take["seed"] = seed  # the seed that made the kept take
+            return base, spoke, options, made, warnings
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            failures.append(f"{base}: {type(exc).__name__}: {exc}")
+    raise ToolError("no speech engine voiced the effect. " + "; ".join(failures))
+
+
+def voice_effect(
+    settings: Any,
+    utterance: str,
+    out: Path,
+    order: list[str],
+    voice: str,
+    seed: int | None,
+    assets_path: str,
+) -> dict[str, Any]:
+    """The speech tool's effect mode: writes `out` (the effect's JSON) and its takes beside it
+    as `<out's stem>-<n>.wav`, replacing a rerun's; answers with each take's file, duration and
+    settings."""
+    if seed is not None and isinstance(settings, dict) and "seed" not in settings:
+        settings = {**settings, "seed": seed}
+    try:
+        takes = effect_takes(settings, utterance)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    voices, warnings = catalog(assets_path)
+    with _client() as http:
+        engine, spoke, options, made, short = effect_run(http, takes, order, voice.strip(), voices)
+    warnings += short
+    out.parent.mkdir(parents=True, exist_ok=True)
+    for old in out.parent.glob(f"{out.stem}-*.wav"):
+        old.unlink()
+    listed = []
+    for n, (take, audio) in enumerate(zip(takes, made, strict=True), 1):
+        file = out.parent / f"{out.stem}-{n}.wav"
+        file.write_bytes(audio)
+        samples, rate = decode(audio)
+        listed.append({"file": file.name, "duration": round(len(samples) / rate, 3),
+                       "settings": take})  # fmt: skip
+    record = {"engine": engine, "voice": spoke, "chosen": voice.strip() or None,
+              "options": options, "warnings": warnings, "takes": listed}  # fmt: skip
+    out.write_text(json.dumps(record, indent=1))
+    said = ", ".join(f"{t['file']} {t['duration']} s" for t in listed)
+    return {
+        "output": str(out),
+        **record,
+        "message": f"{len(listed)} effect takes from {engine}"
+        + (f" in {spoke}" if spoke else "")
+        + f": {said}"
+        + (f"; {'; '.join(warnings)}" if warnings else ""),
+    }
 
 
 def _client() -> httpx.Client:
@@ -721,12 +1004,14 @@ def speech(
     seed: int | None = None,
     frontmatter: dict[str, Any] | None = None,
     assets_path: str = "",
+    effect: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The script is `input` (or the first of `inputs`). Writes `output_path` (timings.json)
-    and the takes in `narration/` beside it. `engines` reorders or narrows SPEECH_ENDPOINTS;
-    it cannot name an endpoint outside it, since the script is sent there. The voice is the
-    stage's `voice`, else the script's, else the engine's default; timings.json records the
-    one that spoke and the options it spoke with."""
+    """With `effect`, the vocal-effect mode (`voice_effect`): the input is the utterance unless
+    the effect names its `text`. Otherwise the script is `input` (or the first of `inputs`).
+    Writes `output_path` (timings.json) and the takes in `narration/` beside it. `engines`
+    reorders or narrows SPEECH_ENDPOINTS; it cannot name an endpoint outside it, since the
+    script is sent there. The voice is the stage's `voice`, else the script's, else the
+    engine's default; timings.json records the one that spoke and the options it spoke with."""
     # ponytail: answers when done rather than as a long job; a few scenes take under a minute.
     del idempotency_key, frontmatter  # a rerun simply voices again; nothing is posted
     script = Path(input_path or (input_paths or [""])[0])
@@ -739,6 +1024,9 @@ def speech(
             f"engines must be among SPEECH_ENDPOINTS ({', '.join(configured)}): {foreign}"
         )
     text = script.read_text()
+    if effect is not None:
+        utterance = " ".join(_FRONTMATTER.sub("", text).split())
+        return voice_effect(effect, utterance, Path(output_path), order, voice, seed, assets_path)
     try:
         scenes = parse_script(text)
     except ValueError as exc:

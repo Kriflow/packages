@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import wave
+from array import array
 from collections.abc import Callable, Iterator
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -487,7 +488,7 @@ def registry(data: Path, transport: Any) -> Connectors:
 def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """One real install for the module: copied to the packages folder and `uv sync`ed there."""
     data = tmp_path_factory.mktemp("data")
-    assert registry(data, FakeTransport()).install_defaults()["speech"] == "1.2.0"
+    assert registry(data, FakeTransport()).install_defaults()["speech"] == "1.3.0"
     return data / "packages"
 
 
@@ -506,7 +507,7 @@ def given(installed: Path, tmp_path: Path) -> Callable[[Any], Connectors]:
 
 
 def test_install_puts_its_dependencies_beside_it(installed: Path) -> None:
-    folder = installed / "speech" / "1.2.0"
+    folder = installed / "speech" / "1.3.0"
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "speech.py").is_file()
 
 
@@ -516,6 +517,12 @@ def test_a_speech_stage_is_checked_for_its_script_output_and_params(
     connectors = given(FakeTransport())
     ok = {"calls": "speech", "input": "script.md", "output": "timings.json", "params": {"seed": 7}}
     assert connectors.stage_problems("w", ok) == []
+    effect = {"text": "Uhhhhhhh", "pitch": -3, "takes": [{"room": 0.2}, {"cut": 1.5}]}
+    ok = {"calls": "speech", "input": "need.md", "output": "uhh.json", "params": {"effect": effect}}
+    assert connectors.stage_problems("w", ok) == []
+    jsonschema.validate(effect, sp.MANIFEST["params"]["properties"]["effect"])
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"pitch": -13}, sp.MANIFEST["params"]["properties"]["effect"])
     assert connectors.stage_problems("w", {"calls": "speech", "params": {"speed": 2}}) == [
         f"speech needs an input, {sp.MANIFEST['inputs'][0]['description']}",
         f"speech needs an output, {sp.MANIFEST['outputs'][0]['description']}",
@@ -528,7 +535,7 @@ def test_the_engines_setting_reaches_the_process_as_speech_endpoints(
 ) -> None:
     connectors = given(FakeTransport())
     speech = connectors.find("w", "speech")
-    assert speech is not None and speech.version == "1.2.0"
+    assert speech is not None and speech.version == "1.3.0"
     assert connectors._env(speech) == {
         "SPEECH_ENDPOINTS": sp.DEFAULT_ENDPOINTS,
         "SPEECH_GPU_ENGINES": sp.DEFAULT_GPU_ENGINES,
@@ -889,3 +896,183 @@ def test_a_voice_s_options_go_to_the_engine_with_its_clip_and_into_timings(
     assert (sent["exaggeration"], sent["cfg_weight"], sent["temperature"]) == ("1.6", "0.2", "1.05")
     timings = speak(tmp_path, assets, SCRIPT, voice="puck")  # a preset: Kokoro gets no options
     assert timings["options"] == {} and one_engine[-1]["model"] == "tts-1"
+
+
+# The vocal-effect mode: a short non-word utterance in a voice, processed as declared.
+
+
+def tone(seconds: float, hz: float = 220.0, lead: float = 0.0, tail: float = 0.0) -> array:
+    """A tone this long between `lead` and `tail` seconds of silence, as samples at RATE."""
+    loud = [int(12000 * math.sin(2 * math.pi * hz * i / RATE)) for i in range(int(seconds * RATE))]
+    return array("h", [0] * int(lead * RATE) + loud + [0] * int(tail * RATE))
+
+
+def pitch_of(samples: array) -> float:
+    """Hz from rising zero crossings over the middle half, an independent measure."""
+    mid = samples[len(samples) // 4 : 3 * len(samples) // 4]
+    rises = sum(1 for a, b in zip(mid, mid[1:], strict=False) if a < 0 <= b)
+    return rises / (len(mid) / RATE)
+
+
+def test_an_effect_pitched_down_3_semitones_is_tape_slowed_by_default() -> None:
+    out = sp.process(tone(1.0), RATE, pitch=-3)
+    assert len(out) / RATE == pytest.approx(1.19, abs=0.01)  # 2^(3/12) slower, as tape
+    assert pitch_of(out) == pytest.approx(185, abs=3)  # 220 Hz three semitones down
+
+
+def test_speed_is_declared_apart_from_pitch() -> None:
+    out = sp.process(tone(1.0), RATE, pitch=-3, speed=1.0)
+    assert len(out) / RATE == pytest.approx(1.0, abs=0.03)
+    assert pitch_of(out) == pytest.approx(185, abs=4)
+    out = sp.process(tone(1.0), RATE, speed=0.5)
+    assert len(out) / RATE == pytest.approx(2.0, abs=0.05)
+    assert pitch_of(out) == pytest.approx(220, abs=4)
+
+
+def test_room_adds_echoes_after_the_sound() -> None:
+    click = array("h", [0] * RATE)
+    click[100] = 20000
+    dry, wet = sp.process(click, RATE, trim=False), sp.process(click, RATE, room=0.5, trim=False)
+    for ms in sp.ECHOES:
+        at = 100 + int(ms * RATE / 1000)
+        assert dry[at] == 0 and wet[at] > 1000
+
+
+def test_a_hard_cut_ends_the_clip_with_a_short_fade() -> None:
+    out = sp.process(tone(2.0), RATE, cut=0.5)
+    assert len(out) / RATE == pytest.approx(0.5, abs=0.001)
+    assert abs(out[-1]) < 200 and max(map(abs, out[-int(0.05 * RATE) : -int(0.03 * RATE)])) > 8000
+
+
+def test_silence_around_the_utterance_is_trimmed() -> None:
+    out = sp.process(tone(0.5, lead=0.4, tail=0.6), RATE)
+    assert len(out) / RATE == pytest.approx(0.5, abs=0.03)
+
+
+def effect(tmp_path: Path, assets: Path, settings: dict[str, Any], **more: Any) -> dict[str, Any]:
+    """The speech tool in effect mode, writing effect.json and its takes in tmp_path."""
+    source = tmp_path / "need.md"
+    source.write_text(more.pop("need", "Uhhhhhhh"))
+    out = tmp_path / "effect.json"
+    answer = sp.speech("k", str(out), str(source), effect=settings, assets_path=str(assets),
+                       **more)  # fmt: skip
+    assert json.loads(out.read_text())["takes"] == answer["takes"]
+    return answer
+
+
+def test_an_effect_voices_the_utterance_in_the_voice_and_processes_each_take(
+    tmp_path: Path, assets: Path, one_engine: list[dict[str, Any]]
+) -> None:
+    answer = effect(tmp_path, assets, {"text": "Uhhhhhhh", "pitch": -3, "takes": 2},
+                    voice="narrator", seed=7)  # fmt: skip
+    assert answer["voice"] == "narrator" and answer["engine"] == "http://e"
+    assert [s["input"] for s in one_engine] == ["Uhhhhhhh", "Uhhhhhhh"]
+    assert all(s["reference"] == CLIP for s in one_engine)  # the voice's clip, no alignment
+    first, second = answer["takes"]
+    assert first["settings"] == {"text": "Uhhhhhhh", "seed": 7, "pitch": -3, "speed": 0.841,
+                                 "room": 0.0, "cut": None, "min_length": None}  # fmt: skip
+    assert second["settings"]["seed"] == 8 and [s["seed"] for s in one_engine] == ["7", "8"]
+    assert first["file"] == "effect-1.wav" and second["file"] == "effect-2.wav"
+    samples, rate = sp.decode((tmp_path / "effect-1.wav").read_bytes())
+    assert first["duration"] == pytest.approx(len(samples) / rate, abs=0.001)
+    # SPOKEN's 1.7 s of sound, three semitones down and tape slow: about 2 s
+    assert 1.0 < first["duration"] < 2.5
+
+
+def test_each_take_may_declare_its_own_settings(
+    tmp_path: Path, assets: Path, one_engine: list[dict[str, Any]]
+) -> None:
+    takes = [{"seed": 3}, {"text": "Mmmmh", "pitch": -5, "speed": 1.0, "room": 0.3, "cut": 0.8}]
+    answer = effect(tmp_path, assets, {"pitch": -3, "takes": takes})
+    one, two = (t["settings"] for t in answer["takes"])
+    assert one == {
+        "text": "Uhhhhhhh",
+        "seed": 3,
+        "pitch": -3,
+        "speed": 0.841,
+        "room": 0.0,
+        "cut": None,
+        "min_length": None,
+    }  # the text is the input's when not declared
+    assert two["text"] == "Mmmmh" and (two["pitch"], two["speed"], two["room"]) == (-5, 1.0, 0.3)
+    assert answer["takes"][1]["duration"] == 0.8 and isinstance(two["seed"], int)
+    assert [s["input"] for s in one_engine] == ["Uhhhhhhh", "Mmmmh"]
+
+
+def test_a_rerun_replaces_the_takes_of_the_last(
+    tmp_path: Path, assets: Path, one_engine: list[dict[str, Any]]
+) -> None:
+    effect(tmp_path, assets, {"takes": 3})
+    effect(tmp_path, assets, {"takes": 1})
+    assert sorted(p.name for p in tmp_path.glob("effect-*.wav")) == ["effect-1.wav"]
+
+
+@pytest.mark.parametrize(
+    ("settings", "need", "problem"),
+    [
+        ({"pitch": 13}, "Uhh", "pitch is -12 to 12 semitones, got 13"),
+        ({"pitch": "low"}, "Uhh", "pitch is -12 to 12 semitones, got 'low'"),
+        ({"speed": 0}, "Uhh", "speed is 0.5 to 2, got 0"),
+        ({"room": 1.5}, "Uhh", "room is 0 to 1, got 1.5"),
+        ({"cut": 0}, "Uhh", "cut is 0.1 to 10 seconds, got 0"),
+        ({"takes": 0}, "Uhh", "takes is 1 to 8, or a list of 1 to 8 takes' settings, got 0"),
+        ({"takes": [{}] * 9}, "Uhh", "takes is 1 to 8, or a list of 1 to 8 takes' settings"),
+        ({"takes": ["x"]}, "Uhh", "take 1 is not an object of settings"),
+        ({"takes": [{"pitch": -40}]}, "Uhh", "take 1: pitch is -12 to 12 semitones, got -40"),
+        ({"echo": 1}, "Uhh", "effect does not take echo"),
+        ({"takes": [{"voice": "x"}]}, "Uhh", "take 1: effect does not take voice"),
+        ({}, "  ", "the effect needs a short utterance"),
+        ({"text": 5}, "Uhh", "the effect needs a short utterance"),
+        ({"text": "U" * 81}, "Uhh", "the effect needs a short utterance, at most 80 characters"),
+        ({"seed": 1.5}, "Uhh", "seed is a whole number, got 1.5"),
+        ({"takes": [{"seed": "x"}]}, "Uhh", "take 1: seed is a whole number, got 'x'"),
+    ],
+)
+def test_bad_effect_settings_are_named(
+    tmp_path: Path,
+    assets: Path,
+    one_engine: list[dict[str, Any]],
+    settings: dict[str, Any],
+    need: str,
+    problem: str,
+) -> None:
+    with pytest.raises(ToolError, match=re.escape(problem)):
+        effect(tmp_path, assets, settings, need=need)
+    assert one_engine == []  # refused before any engine is asked
+
+
+def test_an_effect_falls_back_to_the_next_engine(
+    tmp_path: Path, assets: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[dict[str, Any]] = []
+    broken, good = voiced(seen, clips=True, fail=True), voiced(seen, presets=["af_heart"])
+    monkeypatch.setenv("SPEECH_ENDPOINTS", "http://c,http://k")
+    monkeypatch.setattr(sp, "_client", lambda: engines(c=broken, k=good))
+    answer = effect(tmp_path, assets, {"takes": 2}, voice="narrator")
+    assert (answer["engine"], answer["voice"]) == ("http://k", "heart")
+    assert [s["host"] for s in seen] == ["c", "k", "k"]
+    monkeypatch.setattr(sp, "_client", lambda: engines(c=broken, k=broken))
+    with pytest.raises(ToolError, match="no speech engine voiced the effect"):
+        effect(tmp_path, assets, {})
+
+
+def test_a_take_shorter_than_min_length_is_voiced_again_with_the_next_seed(
+    tmp_path: Path, assets: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeds: list[int] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        seeds.append(seed := json.loads(request.content)["seed"])
+        return httpx.Response(200, content=wav([(1.5 if seed in (9, 30) else 0.3, True)]))
+
+    monkeypatch.setenv("SPEECH_ENDPOINTS", "http://e")
+    monkeypatch.setattr(sp, "_client", lambda: engines(e=handle))
+    answer = effect(tmp_path, assets, {"seed": 7, "min_length": 1.0})
+    assert seeds == [7, 8, 9] and answer["takes"][0]["settings"]["seed"] == 9
+    assert answer["takes"][0]["duration"] == pytest.approx(1.5, abs=0.03)
+    seeds.clear()
+    answer = effect(tmp_path, assets, {"seed": 20, "min_length": 1.0})  # never long enough
+    assert seeds == [20, 21, 22, 23] and answer["takes"][0]["settings"]["seed"] == 20
+    assert answer["warnings"][-1] == f"take 1 stays under min_length 1 s after {sp.TRIES} tries"

@@ -12,8 +12,9 @@ none the shots are joined in order.
 `blender_render_status` reports its progress (shot n of m, waiting for the GPU, finishing). The
 render runs in a detached process (`--job <file>`) so it outlives the MCP session; its state and
 log live beside the output as hidden files. A shot whose stamp (its script, the project's shared
-files, the quality) is unchanged and whose frames are there is not rendered again. SIGTERM to the
-job (a cancel) kills the Blender it runs and fails the job.
+files, the quality) is unchanged and whose video is there is not rendered again. Once the video is
+made, each shot's frames are deleted (its stamp and video stay); a failed render keeps them.
+SIGTERM to the job (a cancel) kills the Blender it runs and fails the job.
 
 `stills` renders chosen frames of one shot and answers with one labelled contact sheet, as an
 image and its path: what a Build Session (blender_build's) looks at to check its work.
@@ -508,9 +509,9 @@ def stamp(folder: Path, spec: dict[str, Any], entry: dict[str, Any], quality: st
 
 
 def _render(state: dict[str, Any], log: IO[str]) -> None:
-    """The shots in order, each skipped when its stamp and frames are there, encoded to
-    `<stage>/shots/<id>.mp4`; then the finish command, or the shots joined, into the output.
-    Raises RuntimeError naming what failed."""
+    """The shots in order, each skipped when its stamp and video are there, encoded to
+    `<stage>/shots/<id>.mp4`; then the finish command, or the shots joined, into the output, and
+    the shots' frames deleted. Raises RuntimeError naming what failed, frames kept."""
     folder, output, quality = Path(state["project"]), Path(state["output"]), state["quality"]
     spec = load(folder)
     stage = output.parents[1]  # <stage>/artifacts/<output>
@@ -527,7 +528,7 @@ def _render(state: dict[str, Any], log: IO[str]) -> None:
         out, video, mark = frames / sid, shots / f"{sid}.mp4", frames / f"{sid}.stamp"
         now = stamp(folder, spec, entry, quality)
         done = mark.is_file() and mark.read_text() == now
-        if done and video.is_file() and any(out.glob("frame_*.png")):
+        if done and video.is_file():  # its frames went once the video was made
             log.write(f"Shot {sid} is up to date\n")
             continue
         mark.unlink(missing_ok=True)
@@ -564,7 +565,13 @@ def _render(state: dict[str, Any], log: IO[str]) -> None:
             raise RuntimeError(f"the finish step exited with {code}")
         if not output.is_file() or output.stat().st_size == 0:
             raise RuntimeError(f"the finish step wrote no video at {output}")
-        return
+    else:
+        _join(spec, shots, folder, output, log)
+    for entry in spec["shots"]:  # full-size PNGs, no longer needed: the shot videos stay
+        shutil.rmtree(frames / entry["id"], ignore_errors=True)
+
+
+def _join(spec: dict[str, Any], shots: Path, folder: Path, output: Path, log: IO[str]) -> None:
     listed = shots / "join.txt"
     listed.write_text("".join(f"file '{shots / s['id']}.mp4'\n" for s in spec["shots"]))
     join = [tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-f", "concat"]

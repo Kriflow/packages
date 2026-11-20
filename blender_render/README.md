@@ -132,7 +132,8 @@ Its files, in the stage's folder (`<stage>`, beside `artifacts/` and a build's `
 send-back's copy of the build does not copy frames):
 
 - `frames/<id>/frame_NNNN.png` and `frames/<id>.stamp`: each shot's frames and what they were
-  rendered from;
+  rendered from. The frames are deleted once the video is made (full-size PNGs filled the disk);
+  a failed render keeps them, and the stamps and shot videos always stay;
 - `shots/<id>.mp4`: each shot's video;
 - `shader-cache/`: NVIDIA's shader disk cache (below);
 - `artifacts/.video.mp4.log`: the render's log, Blender's output without its per-frame `Fra:`
@@ -141,7 +142,8 @@ send-back's copy of the build does not copy frames):
 **Shot cache.** A shot's stamp hashes its script, its `render.json` entry, the quality and its
 preset, `fps`, `width`, `height` and the project's shared files: every file but `render.json`,
 the shot scripts, `*.pyc` and the folders `__pycache__`, `.git`, `node_modules`, `renders` and
-`output`. A shot whose stamp is unchanged and whose frames and video are there is skipped; so a
+`output`. A shot whose stamp is unchanged and whose video is there is skipped, its frames or not
+(so a rerun after a failed finish only runs the finish again); so a
 second render with nothing changed renders nothing, changing one shot's script re-renders that
 shot, and changing a shared file (a kit module, a `.blend`) re-renders all. The world's Assets
 are not hashed: a changed rig there needs a changed project file (or a new stage folder) to

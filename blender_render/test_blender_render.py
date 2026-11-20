@@ -72,7 +72,7 @@ def given(installed: Path, tmp_path: Path) -> Given:
         connectors = registry(data, transport)
         connectors.install_defaults()  # installed already: only remembered
         connectors.offer_defaults(W)
-        connectors.enable(W, "blender_render", "1.0.6")
+        connectors.enable(W, "blender_render", "1.0.7")
         return connectors
 
     return make
@@ -186,7 +186,7 @@ def test_the_manifest_passes_off_by_default_on_the_gpu_with_no_network() -> None
 
 
 def test_install_syncs_its_python_then_fetches_blender_and_ffmpeg(installed: Path) -> None:
-    folder = installed / "blender_render" / "1.0.6"
+    folder = installed / "blender_render" / "1.0.7"
     assert (folder / ".venv" / "bin" / "python").exists()
     assert (folder / "fake-install.log").read_text() == "npm run fetch --silent\n"
 
@@ -340,7 +340,7 @@ def test_a_finish_step_makes_the_video_with_the_documented_environment(
     assert connectors.run_stage(W, "run_1", "stage_2", config).status == "done"
     output = Path(config["params"]["output_path"])
     made = json.loads(output.read_text())
-    package = tmp_path / "packages" / "blender_render" / "1.0.6"
+    package = tmp_path / "packages" / "blender_render" / "1.0.7"
     assert {k: v for k, v in made.items() if k.startswith("BLENDER_")} == {
         "BLENDER_PROJECT": str(project),
         "BLENDER_ASSETS": str(tmp_path / "worlds" / W / "assets"),
@@ -351,6 +351,37 @@ def test_a_finish_step_makes_the_video_with_the_documented_environment(
     assert made["ffmpeg"] == str(path_tools / "ffmpeg") and made["ffprobe"]
     assert Path(made["python3"]).parent.resolve() == (package / ".venv" / "bin").resolve()
     assert made["cwd"] == str(project) and made["shots"] == ["s01.mp4", "s02.mp4"]
+
+
+def test_frames_are_deleted_once_the_video_is_made_and_kept_when_the_finish_fails(
+    tmp_path: Path, path_tools: Path
+) -> None:
+    """A rerun after a failed finish renders nothing again; one after a success (frames gone)
+    neither, and a shot whose video is gone is rendered again."""
+    finish = ["python3", "tools/finish.py", "--nothing"]
+    project = make_project(tmp_path / RUN / "stage_2" / "build", finish=finish)
+    params = stage(tmp_path, project)["params"]
+    output = Path(params["output_path"])
+    frames = output.parents[1] / "frames"
+
+    def rendered(key: str, status: str) -> list[str]:
+        before = len(calls(output))
+        job, _ = here(params, key)
+        assert json.loads(job.read_text())["status"] == status
+        return [c["env"]["BLENDER_SHOT"] for c in calls(output)[before:]]
+
+    assert rendered("1", "failed") == ["s01", "s02"]
+    assert len(list((frames / "s01").glob("frame_*.png"))) == 3  # kept to rerun the finish
+    (project / "render.json").write_text(
+        (project / "render.json").read_text().replace(', "--nothing"', "")
+    )
+    assert rendered("2", "done") == []
+    assert not (frames / "s01").exists() and not (frames / "s02").exists()
+    assert (frames / "s01.stamp").is_file() and (output.parents[1] / "shots/s01.mp4").is_file()
+    assert rendered("3", "done") == []
+    (output.parents[1] / "shots/s02.mp4").unlink()
+    assert rendered("4", "done") == ["s02"]
+    assert not (frames / "s02").exists()
 
 
 @pytest.mark.parametrize(
@@ -569,8 +600,8 @@ def test_a_real_blender_renders_a_3_frame_shot(tmp_path: Path) -> None:
     job, _ = here(params)
     state = json.loads(job.read_text())
     assert state["status"] == "done", br._tail(Path(state["log"]))
-    frames = Path(params["output_path"]).parents[1] / "frames/s01"
-    assert sorted(p.name for p in frames.glob("*.png")) == [f"frame_000{n}.png" for n in (1, 2, 3)]
+    frames = Path(params["output_path"]).parents[1] / "frames"
+    assert not (frames / "s01").exists() and (frames / "s01.stamp").is_file()  # video made
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-count_frames", "-show_entries", "stream=nb_read_frames",
          "-of", "csv=p=0", params["output_path"]],

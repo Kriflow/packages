@@ -1,7 +1,7 @@
 # The Remotion render connector (README.md beside this file). A default package: Swarmify installs
 # it from this folder and enables it for every world that has not decided otherwise.
 name = "remotion_render"
-version = "1.0.8"
+version = "1.0.9"
 label = "Remotion render"
 about = "Renders a script with the Remotion CLI. Needs Node and a Remotion project."
 kind = "stage"
@@ -29,6 +29,8 @@ capabilities = ["templates"]
 [permissions]
 network = ["localhost"]
 gpu = true
+# A build's node_modules links into the pnpm store Build Sessions share (remotion_build).
+folders = ["pnpm-store"]
 install_network = ["registry.npmjs.org", "remotion.media", "storage.googleapis.com"]
 
 [[owned_folders]]

@@ -19,6 +19,13 @@ What it gives the session, all files beside this one:
   registering a Root with composition `Main`, and `@remotion/captions` among its dependencies.
 - The network the session may reach (`permissions.network`): the npm registry and Google Fonts.
 
+The builder installs with pnpm (npm only if pnpm cannot run), `pnpm import` first so a project's
+package-lock.json keeps its versions. Every session shares one store, `<data dir>/pnpm-store`,
+with pnpm's global virtual store: a build's node_modules holds links into it, not copies (the
+sandbox mounts the build folder and the store apart, so hardlinks could not cross). The render
+reads the store (remotion_render's `permissions.folders`). A library's types there cannot see the
+project's `@types/react`, so the starter's tsconfig.json maps `react` to it in `paths`.
+
 The render is remotion_render's `remotion_render` tool, called on the build folder with the
 composition (`[build_session]` `connector`, `tool` and `arguments`), so a world enables both
 (both are defaults). Sharing that code path, rather than a copy of it, keeps one render and one
@@ -66,5 +73,5 @@ Chrome Headless Shell is the one the remotion_render package's install step down
 Tests drive the builder with the scripted CLI and the render with a fake `npx` inside the real
 connector sandbox. One real build, on your subscription and the real Remotion CLI, runs when you opt in:
 `SWARMIFY_REAL_BUILD=1 uv run pytest apps/api/tests/test_build_http.py -k real -s` (about a
-minute on a Mac, most of it the first npm install and the Chrome download).
+minute on a Mac, most of it the first pnpm install and the Chrome download).
 

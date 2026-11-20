@@ -14,7 +14,7 @@ picture follows the voice, never the other way round.
   bracketed asides, spoken as plain words.
 - Captions are karaoke: each line's `words` are Remotion Captions (ms from the take's start, so
   move them onto the timeline), paged per line with createTikTokStyleCaptions from
-  @remotion/captions (`npm install @remotion/captions` if the project lacks it) so a page never
+  @remotion/captions (`pnpm add @remotion/captions` if the project lacks it) so a page never
   crosses lines, the spoken word highlighted; words are inline-block spans with white-space: pre,
   or their leading spaces vanish. Scaling the spoken word up covers the spaces beside it: pad it
   sideways by what the scale adds, or highlight by colour alone.

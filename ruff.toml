@@ -1,0 +1,11 @@
+# The core's settings (Kriflow/kriflow pyproject.toml), so a package reads the same in both.
+line-length = 100
+target-version = "py312"
+# Not the root: the core sorts a package's own module (`import youtube`) as third party.
+src = ["tools"]
+
+[lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[lint.isort]
+known-first-party = ["swarmify_*", "wordmatch"]

@@ -1,0 +1,92 @@
+name: CI
+
+# Pull requests: the rules, lint and the changed packages' tests. Main: every package's tests,
+# then a release tag for each package whose version has none. Nightly: every package against
+# core main; a failure opens or updates one issue. Package tests run inside a checkout of the
+# core (README, Tests); `core_ref` runs them against a branch of it.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: "Kriflow/kriflow ref to test against"
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - run: python3 tools/check.py
+
+  test:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the release tags, on main only
+      issues: write # the nightly failure issue
+    steps:
+      # The core at the root, as its own CI has it; this repository beside it in pkgs/.
+      - uses: actions/checkout@v5
+        with:
+          repository: Kriflow/kriflow
+          ref: ${{ inputs.core_ref || 'main' }}
+      - uses: actions/checkout@v5
+        with:
+          path: pkgs
+          fetch-depth: 0
+      - uses: jdx/mise-action@v5
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+      - uses: actions/cache@v6
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - run: uv sync --locked --all-packages
+      # The connector sandbox's launcher and the OS sandbox it runs in, as in the core's CI.
+      - run: pnpm install --frozen-lockfile
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap socat ripgrep
+          sudo tools/allow-bwrap-userns.sh
+      - run: uv run ruff check pkgs && uv run ruff format --check pkgs
+      - name: Which packages
+        id: which
+        run: |
+          names=all
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            names=$(cd pkgs && python3 tools/check.py changed "origin/${{ github.base_ref }}" | xargs)
+          fi
+          echo "names=${names:-none}" >> "$GITHUB_OUTPUT"
+      - run: pkgs/tools/test_packages.sh . ${{ steps.which.outputs.names }}
+      - name: Release tags
+        if: github.event_name == 'push'
+        working-directory: pkgs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for tag in $(python3 tools/check.py untagged); do
+            git tag -a "$tag" -m "$tag"
+            git push origin "$tag"
+          done
+      - name: Nightly failure issue
+        if: failure() && github.event_name == 'schedule'
+        working-directory: pkgs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly package tests fail against core main"
+          open=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$open" ]; then gh issue comment "$open" --body "Failed again: $RUN"
+          else gh issue create --title "$title" --body "Failed: $RUN"; fi

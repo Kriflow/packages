@@ -3,7 +3,7 @@
 The HyperFrames build connector: one sandboxed coding session writes a HyperFrames project (HTML,
 CSS and a GSAP timeline) for the run's script, then the hyperframes_render package's own render,
 not the agent, turns it into the stage's video. It is a Connector Package (ADR 0019) installed
-with Swarmify from this folder but **not enabled by default** (`enable_by_default = false`):
+with Kriflow from its release tag here but **not enabled by default** (`enable_by_default = false`):
 Remotion stays a world's video engine until its operator enables this package and
 hyperframes_render on the Connectors page. Everything Swarmify knows of it is
 `swarmify-connector.toml`: it requests a Build Session (see Build Sessions in Swarmify's README,

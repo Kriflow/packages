@@ -2,7 +2,7 @@
 
 The speech connector: it voices a script, one take per scene, and writes the word timings and cut
 points a voice-first video is edited on. It is a Connector Package (ADR 0019) and one of
-Swarmify's default packages: on startup Swarmify installs it from this folder into
+Swarmify's default packages: on startup Kriflow installs it from its release tag in this repository into
 `<data dir>/packages/speech/<version>/`, where its install step (`uv sync`) puts httpx and the MCP
 SDK beside it (ADR 0026), and enables it for every world that has not decided otherwise, new worlds
 included, so workflows call `speech` exactly as before. Everything Swarmify knows of it is
@@ -102,7 +102,7 @@ connector tries them in the order its Speech engines Setting (`SPEECH_ENDPOINTS`
   instead, with the Setting `http://chatterbox-gpu:8881,http://kokoro:8880`. It builds with PyTorch's CUDA
   wheels and `/health` says `"device": "cuda"`; on the CPU Chatterbox runs at about 11x real
   time. Natively on Linux, `uv sync --extra cpu` or `--extra cu124` picks the wheels.
-- `uv run pytest connectors/speech --no-cov` includes a smoke test (`test_engines_smoke.py`) that
+- `tools/test_packages.sh <core checkout> speech --no-cov` includes a smoke test (`test_engines_smoke.py`) that
   speaks a sentence on every engine in `SPEECH_ENDPOINTS` (the environment variable, default the
   two native ports) and aligns it where the engine can, and on an engine advertising
   `whispering` checks a whispered take differs from the plain one and aligns to the same words;
@@ -276,9 +276,9 @@ them:
   gets the preset. When the engine a run falls back to cannot speak the chosen voice, it speaks
   the catalog entry it can that shares the most tags with it, else its default, and
   `timings.json` records which voice spoke.
-- Starter voices without recording anyone: `uv run --project connectors/speech python
+- Starter voices without recording anyone: `uv run --project speech python
   speech/voices.py <world id> [presets...]` (in Docker, `docker compose exec api sh -c
-  'cd /data/packages/speech/1.1.1 && .venv/bin/python voices.py <world id>'`) has Kokoro
+  'cd /data/packages/speech/<version> && .venv/bin/python voices.py <world id>'`) has Kokoro
   (`KOKORO_URL`, default `http://localhost:8880`; started from this folder's compose file when it
   is not up, or it says so when Docker is unavailable) speak one neutral 9 s
   sentence in each preset, by default eight varied ones (`af_heart` and `am_michael` warm,
@@ -296,6 +296,6 @@ them:
 
 ## Tests
 
-`uv run pytest connectors/speech --no-cov` runs the connector against fake engines, installs
+`tools/test_packages.sh <core checkout> speech --no-cov` runs the connector against fake engines, installs
 this folder through Swarmify's real install path and voices a script over stdio MCP; `chatterbox/`
 has its own tests of the service with a fake model.

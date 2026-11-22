@@ -3,7 +3,7 @@
 The YouTube connector: it uploads a video to a YouTube channel through the YouTube Data API, now
 or scheduled, and reads view counts back. It is our own small MCP server (ADR 0015) and a
 Connector Package (ADR 0019), one of Swarmify's default packages: on startup Swarmify installs it
-from this folder into `<data dir>/packages/youtube/<version>/`, where its install step (`uv sync`)
+from its release tag here into `<data dir>/packages/youtube/<version>/`, where its install step (`uv sync`)
 puts httpx and the MCP SDK beside it, and enables it for every world that has not decided
 otherwise, so workflows call `youtube` exactly as before. Everything Swarmify knows of it is
 `swarmify-connector.toml`.
@@ -160,4 +160,4 @@ share 10,000 units a day
 `test_youtube.py` covers the preview, the Data API calls against a fake Google (httpx's
 MockTransport), and the package installed through the real install path from a V1 `.env`,
 signed in by refreshing V1's token against a fake provider and answering `preview` and `publish`
-over stdio MCP. Run it with `uv run pytest connectors/youtube` from the repository root.
+over stdio MCP. Run it with `tools/test_packages.sh <core checkout> youtube` from the repository root.

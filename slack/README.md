@@ -13,7 +13,7 @@ thread, short, with a link to the run page, and each change it proposes with **A
 the run has moved on it answers "The run moved on; open it to see the new proposal."
 
 It is a Connector Package (ADR 0019) of kind `notify`, offering the `remote_approvals` and
-`run_assistant` Capabilities. Swarmify installs it from this folder with its other packages, its
+`run_assistant` Capabilities. Kriflow installs it from its release tag in this repository with its other packages, its
 install step (`uv sync`) putting Slack's Bolt and SDK and the MCP SDK beside it (ADR 0026), but
 no world is given it: enable it on the Connectors page of each world whose gates should go to
 Slack. Until a world has it enabled and set up, that world's Slack webhook (Settings,

@@ -3,7 +3,7 @@
 The Meta connector: it posts Reels to a world's Instagram account and the Facebook Page it is
 linked to through Meta's Graph API (v26.0). It is our own small MCP server (ADR 0015) and a
 Connector Package (ADR 0019), one of Swarmify's default packages: on startup Swarmify installs it
-from this folder into `<data dir>/packages/meta/<version>/` and enables it for every world that
+from its release tag here into `<data dir>/packages/meta/<version>/` and enables it for every world that
 has not decided otherwise. Everything Swarmify knows of it is `swarmify-connector.toml`.
 
 It posts Reels to Instagram and the Facebook Page, a retry never posts twice, and it reads
@@ -175,5 +175,5 @@ stage's record. Then `outcomes`: views per Platform and their sum, another conne
 link, posts left out, one post's error, and a missing insights permission answered as a
 notice per Platform. Then the package installed through the
 real install path, answering over stdio MCP in its sandbox, and a workflow with an Instagram stage
-and no gate refused when saved. Run it with `uv run pytest connectors/meta` from the repository
+and no gate refused when saved. Run it with `tools/test_packages.sh <core checkout> meta` from the repository
 root.

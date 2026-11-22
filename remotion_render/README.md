@@ -3,7 +3,7 @@
 The Remotion render connector: our stdio MCP wrapper over `remotion render` (ADR 0015). It
 renders a script artifact through a Remotion project's composition into a video. It is a
 Connector Package (ADR 0019) and one of Swarmify's default packages: on startup Swarmify installs
-it from this folder into `<data dir>/packages/remotion_render/<version>/` and enables it for
+it from its release tag here into `<data dir>/packages/remotion_render/<version>/` and enables it for
 every world that has not decided otherwise, so workflows call `remotion_render` exactly as before.
 Everything Swarmify knows of it is `swarmify-connector.toml`.
 
@@ -125,5 +125,5 @@ fake Remotion CLI on `PATH` (`fake_npx.py`), all in the real connector sandbox, 
 agent-written project trying to read the data directory's keys or the world's other assets, write
 outside its stage or into a Template and reach the internet is refused each time and each block
 logged. One real render runs when you opt in:
-`SWARMIFY_REMOTION_PROJECT=<project> SWARMIFY_REMOTION_COMPOSITION=<id> uv run pytest connectors/remotion_render -k real_render`,
+`SWARMIFY_REMOTION_PROJECT=<project> SWARMIFY_REMOTION_COMPOSITION=<id> uv run pytest --no-cov connectors/remotion_render -k real_render` in a core checkout that `tools/test_packages.sh <core> remotion_render` has filled,
 the project copied into a world's Templates first.

@@ -428,13 +428,22 @@ def google_with_analytics(
 
 
 def report(
-    *metrics: str, rows: dict[str, list[float]]
+    *metrics: str,
+    rows: dict[str, list[float]],
+    curves: dict[str, list[list[float]]] | None = None,
 ) -> Callable[[httpx.Request], httpx.Response]:
-    """YouTube Analytics' basic report of one video, `rows` by video id (none: no data yet)."""
+    """YouTube Analytics' basic report of one video, `rows` by video id (none: no data yet), and
+    its audience retention report, `curves` by video id (none: refused, as for a video too new)."""
 
     def analytics(request: httpx.Request) -> httpx.Response:
         video = request.url.params["filters"].removeprefix("video==")
         asked = request.url.params["metrics"].split(",")
+        if request.url.params.get("dimensions") == "elapsedVideoTimeRatio":
+            assert asked == ["audienceWatchRatio"]
+            if video not in (curves or {}):
+                return httpx.Response(400, json={"error": {"message": "Unknown video"}})
+            columns = [{"name": "elapsedVideoTimeRatio"}, {"name": "audienceWatchRatio"}]
+            return httpx.Response(200, json={"columnHeaders": columns, "rows": curves[video]})
         if "engagedViews" in asked and "engagedViews" not in metrics:
             return httpx.Response(400, json={"error": {"message": "Unknown identifier"}})
         headers = [{"name": m} for m in asked]
@@ -477,8 +486,14 @@ def test_outcomes_claim_every_post_that_is_a_youtube_video_whoever_posted_it() -
         "short_1": [10, 50.0, 10, 9],
         "watch-2": [10, 70.0, 20, 1],
     }
+    curves = {"abc123": [[0.0, 1.0], [0.5, 0.62], [1.0, 0.3]], "watch-2": [[0.0, 0.9]]}
     analytics = report(
-        "views", "averageViewPercentage", "averageViewDuration", "engagedViews", rows=rows
+        "views",
+        "averageViewPercentage",
+        "averageViewDuration",
+        "engagedViews",
+        rows=rows,
+        curves=curves,
     )
 
     def recording(request: httpx.Request) -> httpx.Response:
@@ -494,6 +509,7 @@ def test_outcomes_claim_every_post_that_is_a_youtube_video_whoever_posted_it() -
                 "youtube_avg_viewed_percent": 62.5,
                 "youtube_avg_view_seconds": 12,
                 "youtube_engaged_views": 8,
+                "curves": {"youtube_retention": curves["abc123"]},
             },
             "sched1": {
                 "views": 10,
@@ -507,6 +523,8 @@ def test_outcomes_claim_every_post_that_is_a_youtube_video_whoever_posted_it() -
                 "youtube_avg_viewed_percent": 60.0,
                 "youtube_avg_view_seconds": 15.0,
                 "youtube_engaged_views": 10,
+                # curves never add up: the first of its videos with one (short_1 has none yet)
+                "curves": {"youtube_retention": curves["watch-2"]},
             },
         }
         assert yt.outcomes_of(http, ENV, POSTS[3:5], NOW) == {}  # nothing to ask YouTube
@@ -515,6 +533,14 @@ def test_outcomes_claim_every_post_that_is_a_youtube_video_whoever_posted_it() -
     assert first.url.params["ids"] == "channel==MINE"
     assert first.url.params["endDate"] == "2026-10-26"
     assert first.headers["authorization"] == "Bearer tok"
+    drawn = [r for r in seen if "dimensions" in r.url.params]
+    # one curve report per video with data: sched1 has none, so it is never asked
+    assert [r.url.params["filters"] for r in drawn] == [
+        "video==abc123",
+        "video==short_1",
+        "video==watch-2",
+    ]
+    assert drawn[0].url.params["sort"] == "elapsedVideoTimeRatio"
 
 
 def test_a_channel_without_engaged_views_still_gets_retention() -> None:
@@ -749,7 +775,7 @@ def v1(tmp_path: Path, provider: FakeProvider) -> Callable[[Any], Connectors]:
 
     def make(transport: Any) -> Connectors:
         connectors = registry(tmp_path, transport)
-        assert connectors.install_defaults()["youtube"] == "1.4.0"
+        assert connectors.install_defaults()["youtube"] == "1.5.0"
         connectors.offer_defaults("w")
         return connectors
 
@@ -760,13 +786,13 @@ def test_a_v1_sign_in_is_carried_over_so_no_new_sign_in_is_needed(
     v1: Callable[[Any], Connectors], provider: FakeProvider, tmp_path: Path
 ) -> None:
     connectors = v1(FakeTransport())
-    folder = tmp_path / "packages" / "youtube" / "1.4.0"
+    folder = tmp_path / "packages" / "youtube" / "1.5.0"
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "youtube.py").is_file()
     shared, _ = connectors.setups.values("youtube", "w")
     assert (shared["youtube_client_id"], shared["youtube_client_secret"]) == ("yt-app", "yt-secret")
     assert shared["youtube"]["refresh_token"] == "rt-from-v1"
     youtube = connectors.find("w", "youtube")
-    assert youtube is not None and youtube.version == "1.4.0"
+    assert youtube is not None and youtube.version == "1.5.0"
     assert connectors.missing(youtube) == [] and connectors.sign_in_needed(youtube) == []
 
     env = connectors._env(youtube)  # the first start refreshes the V1 token

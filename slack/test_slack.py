@@ -198,7 +198,7 @@ def test_a_thread_reply_asks_the_runs_assistant_and_its_proposals_come_with_appl
     labels = [[e["text"]["text"] for e in b["elements"]] for b in answer["blocks"][2::2]][:2]
     assert labels == [["Apply", "Not now"], ["Not now"]]  # a refused change cannot be applied
     link = answer["blocks"][-1]["elements"][0]["text"]
-    assert link == f"<{GATE['link']}|Read it all in Swarmify>."
+    assert link == f"<{GATE['link']}|Read it all in Kriflow>."
 
     applied = sc.settle(pressed(answer, "proposal_1", "Apply"), core)
     by = {"run_id": "run_1", "proposal_id": "proposal_1", "by": "slack:lee"}
@@ -222,10 +222,10 @@ def test_a_thread_reply_asks_the_runs_assistant_and_its_proposals_come_with_appl
     assert slack.posted[-1]["blocks"][0]["text"]["text"] == "(no answer)"  # never empty
 
     def down(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        raise sc.Refused("Swarmify could not be reached: refused")
+        raise sc.Refused("Kriflow could not be reached: refused")
 
     sc.reply(replied("Still there?"), down)
-    assert slack.posted[-1]["text"] == "Swarmify could not be reached: refused"
+    assert slack.posted[-1]["text"] == "Kriflow could not be reached: refused"
 
 
 class InProcess(FakeTransport):
@@ -326,7 +326,7 @@ def test_slack_and_the_web_ui_answer_gates_alike_and_both_update_the_message(
         (confirm,) = buttons(slack.posted[1])
         assert http.post(f"/api/runs/{run}/decision", json={}).status_code == 200
         until(lambda: len(slack.updated) == 2)
-        assert slack.updated[1]["text"] == "Confirmed in Swarmify."
+        assert slack.updated[1]["text"] == "Confirmed in Kriflow."
         assert (slack.updated[1]["channel"], slack.updated[1]["ts"]) == (CHANNEL, "2.000100")
         assert click(confirm) == "this gate was already answered"
         # Gates went to Slack instead; the webhook keeps only run endings and budget warnings.

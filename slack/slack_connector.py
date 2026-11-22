@@ -82,7 +82,7 @@ def blocks(gate: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     if buttons:
         out.append({"type": "actions", "block_id": "answers", "elements": buttons[:25]})
     rest = "to add a note or answer another way" if buttons else "to answer it"
-    out.append(_context(f"<{gate['link']}|Open it in Swarmify> {rest}."))
+    out.append(_context(f"<{gate['link']}|Open it in Kriflow> {rest}."))
     return f"{gate['run_name']} is waiting on you at {gate['stage']}.", out
 
 
@@ -107,7 +107,7 @@ def update_gate(message_ref: dict[str, Any], resolution: dict[str, Any]) -> dict
     said = _esc(resolution["text"])
     shown = [
         _section(f"{message_ref['head']}\n{said}"),
-        _context(f"<{message_ref['link']}|Open the run in Swarmify>."),
+        _context(f"<{message_ref['link']}|Open the run in Kriflow>."),
     ]
     web().chat_update(
         channel=message_ref["channel"], ts=message_ref["ts"], text=resolution["text"], blocks=shown
@@ -158,13 +158,13 @@ def core(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
             result = await swarmify.call_tool(tool, arguments)
             said = "\n".join(getattr(b, "text", "") for b in result.content).strip()
             said = said.removeprefix(f"Error executing tool {tool}: ")
-            refused = (said or "Swarmify refused it.") if result.is_error else None
+            refused = (said or "Kriflow refused it.") if result.is_error else None
             return result.structured_content or {}, refused
 
     try:
         out, refused = anyio.run(go)
     except Exception as exc:
-        raise Refused(f"Swarmify could not be reached: {exc}") from exc
+        raise Refused(f"Kriflow could not be reached: {exc}") from exc
     if refused:
         raise Refused(refused)
     return out
@@ -213,7 +213,7 @@ def answered(said: dict[str, Any], link: str) -> tuple[str, list[dict[str, Any]]
         not_now = _button(NOT_NOW, "Not now", value)
         shown = [not_now] if proposal["violations"] else [_button(APPLY, "Apply", value), not_now]
         out.append({"type": "actions", "block_id": proposal["id"], "elements": shown})
-    rest = "Read it all in Swarmify" if short != reply else "Open the run in Swarmify"
+    rest = "Read it all in Kriflow" if short != reply else "Open the run in Kriflow"
     out.append(_context(f"<{link}|{rest}>."))
     return short, out
 
@@ -246,7 +246,7 @@ def reply(event: dict[str, Any], call: Callable[[str, dict[str, Any]], dict[str,
         text, shown = answered({**said, "run_id": gate["run_id"]}, gate["link"])
     except Refused as exc:
         text = str(exc)
-        shown = [_section(_esc(text)), _context(f"<{gate['link']}|Open the run in Swarmify>.")]
+        shown = [_section(_esc(text)), _context(f"<{gate['link']}|Open the run in Kriflow>.")]
     thread = {"channel": event["channel"], "thread_ts": event["thread_ts"]}
     web().chat_postMessage(**thread, text=text, blocks=shown)
 

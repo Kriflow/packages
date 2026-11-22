@@ -292,7 +292,7 @@ def test_slack_and_the_web_ui_answer_gates_alike_and_both_update_the_message(
         assert http.post(f"/api/runs/{first}/abort").status_code == 200
 
         assert "slack" not in http.get(f"/api/worlds/{world}/packages").json()  # not by default
-        enabled = http.put(f"/api/worlds/{world}/packages/slack", json={"version": "1.1.1"})
+        enabled = http.put(f"/api/worlds/{world}/packages/slack", json={"version": "1.1.2"})
         assert enabled.status_code == 200
         setup = {
             "shared": {"bot_token": "xoxb-1", "app_token": "xapp-1"},
@@ -333,7 +333,7 @@ def test_slack_and_the_web_ui_answer_gates_alike_and_both_update_the_message(
         assert not any("waiting on you" in t for t in webhook.texts()[hooked:])
 
     # The package came through the real install path, and its server starts over stdio.
-    folder = tmp_path / "packages/slack/1.1.1"
+    folder = tmp_path / "packages/slack/1.1.2"
     package = Connector(
         "slack", world, "slack", "notify", [".venv/bin/python", "slack_connector.py"],
         folder=str(folder),
@@ -370,7 +370,7 @@ def test_a_thread_reply_reaches_the_runs_assistant_and_slack_applies_its_proposa
             ask(unhooked)
         http.post(f"/api/runs/{unhooked}/abort").raise_for_status()
 
-        http.put(f"/api/worlds/{world}/packages/slack", json={"version": "1.1.1"})
+        http.put(f"/api/worlds/{world}/packages/slack", json={"version": "1.1.2"})
         setup = {"shared": {"bot_token": "xoxb-1", "app_token": "xapp-1"}}
         setup["world"] = {"channel": CHANNEL}
         assert http.put(f"/api/worlds/{world}/packages/slack/setup", json=setup).is_success

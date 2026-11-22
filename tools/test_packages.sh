@@ -19,7 +19,7 @@ for manifest in "$here"/*/swarmify-connector.toml; do
 done
 if [ "$#" -eq 0 ] || [ "$1" = all ]; then set -- "${names[@]}"; fi
 # This repository's own tests (check tool, index against the core's review), in place.
-(cd "$here" && "$core/.venv/bin/python" -m pytest -q -p no:cacheprovider tests)
+(cd "$here" && "$core/.venv/bin/python" -m pytest -q -p no:cacheprovider --no-cov tests)
 [ "${1:-}" = none ] && exit 0
 cd "$core"
 # --no-cov: the core's coverage floor is for the core's own suite.

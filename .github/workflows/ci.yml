@@ -14,7 +14,7 @@ on:
     inputs:
       core_ref:
         description: "Kriflow/kriflow ref to test against"
-        default: main
+        default: packages-core
 
 permissions:
   contents: read
@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: Kriflow/kriflow
-          ref: ${{ inputs.core_ref || 'main' }}
+          ref: ${{ inputs.core_ref || 'packages-core' }}
       - uses: actions/checkout@v5
         with:
           path: pkgs

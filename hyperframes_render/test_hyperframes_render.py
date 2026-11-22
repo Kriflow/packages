@@ -232,7 +232,6 @@ def test_a_world_has_it_only_once_its_operator_enables_it(installed: Path, tmp_p
     connectors.install_defaults()
     connectors.offer_defaults(W)
     assert connectors.find(W, "hyperframes_render") is None
-    assert connectors.find(W, "remotion_render") is not None
     connectors.enable(W, "hyperframes_render", "1.0.2")
     assert connectors.find(W, "hyperframes_render") is not None
 

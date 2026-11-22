@@ -3,7 +3,7 @@
 # And Browser Connector). Off until a world enables it.
 name = "browser"
 version = "1.0.0"
-contract = 1
+contract = 2
 label = "Browser"
 about = "A headless browser agents drive on sites with no API, signing in with a World Login they never see."
 kind = "tool"

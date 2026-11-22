@@ -187,16 +187,18 @@ def _read_session(path: Path | None) -> dict[str, Any] | None:
     return {"cookies": state["cookies"], "origins": state.get("origins") or []}
 
 
-def stage_folder(assets_path: str = "") -> Path | None:
-    """The stage's folder, which the sandbox lets this process write: beside the world's assets
-    (`SWARMIFY_ASSETS` in a swarm stage, the call's `assets_path` in a connector stage), under
-    `runs/<run>/<stage>`. None outside a stage."""
-    assets = os.environ.get("SWARMIFY_ASSETS") or assets_path
-    run, stage = os.environ.get("SWARMIFY_RUN_ID"), os.environ.get("SWARMIFY_STAGE_ID")
-    if not (assets and run and stage):
-        return None
-    folder = Path(assets).parent / "runs" / run / stage
-    return folder if folder.is_dir() and os.access(folder, os.W_OK) else None
+def _recording_folder() -> Path:
+    """Its stage's `browser/` folder (`SWARMIFY_STAGE_DIR`, package contract 2), or HOME's when
+    it runs for no stage or may not write there (a swarm stage's server without a login)."""
+    home = Path(os.environ.get("HOME", ".")) / "browser"
+    if stage := os.environ.get("SWARMIFY_STAGE_DIR"):
+        try:
+            (Path(stage) / "browser").mkdir(exist_ok=True)
+            return Path(stage) / "browser"
+        except OSError:
+            pass  # a read-only stage folder
+    home.mkdir(parents=True, exist_ok=True)
+    return home
 
 
 def _proxy(login: Login | None) -> dict[str, str] | None:
@@ -263,11 +265,9 @@ class Session:
             return [self.scrub(v) for v in value]
         return value
 
-    async def start(self, assets_path: str = "") -> Page:
+    async def start(self) -> Page:
         if self.context is None:
-            stage = stage_folder(assets_path)
-            self.folder = (stage or Path(os.environ.get("HOME", "."))) / "browser"
-            self.folder.mkdir(parents=True, exist_ok=True)
+            self.folder = _recording_folder()
             proxy = _proxy(self.login)  # before the driver starts: it reads the environment
             self.playwright = await async_playwright().start()
             # a sandbox's /dev may have no shared memory folder: Chromium keeps it in its temp
@@ -375,10 +375,10 @@ def tool(description: str) -> Callable[[Callable[..., Awaitable[dict[str, Any]]]
     def wrap(fn: Callable[..., Awaitable[dict[str, Any]]]) -> Any:
         @functools.wraps(fn)
         async def run(**kwargs: Any) -> dict[str, Any]:
-            args = {k: v for k, v in kwargs.items() if k != "assets_path" and v not in ("", None)}
+            args = {k: v for k, v in kwargs.items() if v not in ("", None)}
             status = "ok"
             try:
-                await S.start(kwargs.get("assets_path", ""))
+                await S.start()
                 out = await fn(**kwargs)
                 status = str(out.get("login_result", "ok"))
                 if out.pop("_hidden", False):
@@ -574,13 +574,13 @@ async def _navigating(page: Page) -> AsyncIterator[None]:
     "refused_origin (the page is another site's; nothing was typed) or failed (with the site's "
     "message). A code it cannot make, or a captcha, waits for a person."
 )
-async def sign_in(url: str = "", assets_path: str = "") -> dict[str, Any]:
+async def sign_in(url: str = "") -> dict[str, Any]:
     if S.login is None:
         raise ToolError("sign_in needs a login: name one in the stage, as login: shop_admin")
     if url and not allowed(url, S.login.domains):
         return {"login_result": "refused_origin", "message": f"{url} is not {S.login.name}'s"
                 f" site ({', '.join(S.login.domains)}): nothing was opened or typed"}  # fmt: skip
-    page = await S.start(assets_path)
+    page = await S.start()
     if url:
         response = await page.goto(url)
         if response is None or response.status >= 400:
@@ -592,9 +592,9 @@ async def sign_in(url: str = "", assets_path: str = "") -> dict[str, Any]:
 
 
 @tool("Open `url` (one of the stage's sites) in the browser. Answers its title and URL.")
-async def open(url: str, assets_path: str = "") -> dict[str, Any]:  # noqa: A001
+async def open(url: str) -> dict[str, Any]:  # noqa: A001
     _check_url(url)
-    page = await S.start(assets_path)
+    page = await S.start()
     response = await page.goto(url)
     return {"url": page.url, "title": await page.title(), "status": response and response.status}
 
@@ -682,8 +682,8 @@ async def wait_for(text: str = "", seconds: float = 10) -> dict[str, Any]:
 
 
 @tool("Save a PNG of the page as `name` in the stage's browser/ folder. Answers its path.")
-async def screenshot(name: str, assets_path: str = "") -> dict[str, Any]:
-    page = await S.start(assets_path)
+async def screenshot(name: str) -> dict[str, Any]:
+    page = await S.start()
     clean = NAME.sub("-", S.scrub(name)).strip("-")[:64] or "screenshot"
     assert S.folder is not None
     path = S.folder / f"{clean}.png"

@@ -38,7 +38,7 @@ description = "A headless browser agents drive on sites with no API, signing in 
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "browser"
 ref = "browser-v1.0.0"
-contract = 1
+contract = 2
 permissions = [
   "network: localhost",
   "install_network: pypi.org",

@@ -7,6 +7,9 @@ mismatch, while curl through the same proxy got it whole). So each file Playwrig
 (`playwright install --dry-run`) is fetched here, resuming with a Range request where a try was
 cut short, unpacked with its file modes, and marked installed as Playwright marks it. Playwright's
 own install runs last: it finds everything in place, or fetches what is still missing.
+
+The core fixed that proxy in package contract 2 (Kriflow/kriflow sandbox-fixes); the resume stays,
+harmless, for a box whose image predates the fix.
 """
 
 import os

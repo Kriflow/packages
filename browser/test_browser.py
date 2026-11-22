@@ -306,9 +306,7 @@ def served(
     home, world = tmp_path / "home", tmp_path / "world"
     home.mkdir(parents=True, exist_ok=True)
     (world / "runs" / "r" / "s").mkdir(parents=True, exist_ok=True)
-    (world / "assets").mkdir(exist_ok=True)
-    stage = {"SWARMIFY_ASSETS": str(world / "assets"), "SWARMIFY_RUN_ID": "r"}
-    stage["SWARMIFY_STAGE_ID"] = "s"
+    stage = {"SWARMIFY_STAGE_DIR": str(world / "runs" / "r" / "s")}
     folder = installed / "browser" / VERSION
     package = Connector(
         "browser", "w", "Browser", "tool", [".venv/bin/python", "browser.py"], folder=str(folder)

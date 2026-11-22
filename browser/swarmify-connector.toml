@@ -1,0 +1,41 @@
+# The browser connector (README.md beside this file): our own MCP server over Playwright's
+# headless Chromium (ADR 0015), signing in with the World Login a stage names (spec: World Logins
+# And Browser Connector). Off until a world enables it.
+name = "browser"
+version = "1.0.0"
+contract = 1
+label = "Browser"
+about = "A headless browser agents drive on sites with no API, signing in with a World Login they never see."
+kind = "tool"
+stage_types = ["swarm", "connector"]
+enable_by_default = false
+planner_notes = "Name the site's login on the stage (login: shop_admin). Agents call sign_in, then open, snapshot, click, type, read_text, screenshot and download; a connector stage calls the one tool params.tool names (as sign_in, which saves the session for later stages) with params.url. Recordings land in the stage's browser/ folder."
+
+runtime = "uv"
+# Chromium (Playwright's headless shell, and its ffmpeg for the videos) goes into the version's
+# folder for this platform (the box: Linux amd64), fetched by install_chromium.py so a download the
+# sandbox's proxy cuts short resumes instead of failing.
+install = ["sh", "-c", "uv sync --frozen --no-dev && .venv/bin/python install_chromium.py"]
+command = [".venv/bin/python", "browser.py"]
+
+[login]
+accepts = true
+
+[params]
+type = "object"
+[params.properties.url]
+type = "string"
+description = "the page sign_in or open starts on, on the login's domains"
+[params.properties.name]
+type = "string"
+description = "screenshot: the image's name"
+
+[setup]
+help_url = "https://github.com/Kriflow/packages/tree/main/browser#setup"
+
+# Its sandbox (ADR 0021): `localhost` for its browser, as the render packages; a stage naming a
+# login adds that login's domains. The install step reaches Playwright's download hosts (its
+# Chrome for Testing builds redirect to Google's storage).
+[permissions]
+network = ["localhost"]
+install_network = ["cdn.playwright.dev", "playwright.download.prss.microsoft.com", "storage.googleapis.com"]

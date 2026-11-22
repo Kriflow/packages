@@ -11,8 +11,10 @@ Capability) answers the views and visibility (`visible`, `visibility_label`) of 
 the core passes that is a YouTube video, by its own id or by a YouTube link, so a video another
 connector posted counts too; one `videos.list` call per 50 videos (part statistics and status, 1
 quota unit). It adds retention from YouTube Analytics (average percentage viewed, average view
-duration, engaged views), one report per video; when the account may not read Analytics it answers
-the views alone with a `_notice` saying how to fix it. `channel` answers the title of the channel
+duration, engaged views), one report per video, and the audience retention curve as the curve
+`youtube_retention` ([elapsed video time ratio, audience watch ratio] points), one more report per
+video that has data; when the account may not read Analytics it answers the views alone with a
+`_notice` saying how to fix it. `channel` answers the title of the channel
 the account posts to (`channels.list` mine, 1 quota unit).
 
 The account is the Manifest's `youtube` oauth field: Swarmify signs in, keeps the token set and
@@ -70,6 +72,8 @@ RETENTION = {
 }
 """YouTube Analytics' metrics, by the outcome names they are recorded under."""
 COUNTS = {"youtube_engaged_views"}
+CURVE = "youtube_retention"
+"""The audience retention curve's name: [elapsed video time ratio, audience watch ratio] points."""
 NOTICE = "_notice"
 """The outcomes answer's key for why retention could not be read."""
 SCOPE_NOTICE = (
@@ -497,7 +501,7 @@ def _reasons(response: httpx.Response) -> str:
 
 def retention(
     http: httpx.Client, env: Mapping[str, str], ids: list[str], now: datetime
-) -> tuple[dict[str, dict[str, float]], str | None]:
+) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Each video's retention from YouTube Analytics by id (RETENTION's names), and a notice
     when the account may not read it at all: then the rest of the pass is skipped and the views
     still count. A video with no data yet, or one the channel does not own, is left out."""
@@ -539,7 +543,36 @@ def retention(
         for row in answer.get("rows") or []:
             got = dict(zip(names, row, strict=False))
             found[video] = {name: got[m] for m, name in RETENTION.items() if got.get(m) is not None}
+        if video in found and (curve := retention_curve(http, auth, video, now)):
+            found[video][CURVE] = curve
     return found, None
+
+
+def retention_curve(
+    http: httpx.Client, auth: dict[str, str], video: str, now: datetime
+) -> list[list[float]]:
+    """The video's audience retention report: [elapsed video time ratio, audience watch ratio]
+    points in order; none when YouTube answers anything else (the next pass tries again)."""
+    response = http.get(
+        ANALYTICS_URL,
+        params={
+            "ids": "channel==MINE",
+            "startDate": ANALYTICS_START,
+            "endDate": now.astimezone(UTC).date().isoformat(),
+            "dimensions": "elapsedVideoTimeRatio",
+            "metrics": "audienceWatchRatio",
+            "filters": f"video=={video}",
+            "sort": "elapsedVideoTimeRatio",
+        },
+        headers=auth,
+    )
+    if response.status_code != 200:
+        return []
+    answer = response.json()
+    names = [h.get("name") for h in answer.get("columnHeaders", [])]
+    rows = (dict(zip(names, row, strict=False)) for row in answer.get("rows") or [])
+    points = ((got.get("elapsedVideoTimeRatio"), got.get("audienceWatchRatio")) for got in rows)
+    return [[float(x), float(y)] for x, y in points if x is not None and y is not None]
 
 
 _LINK = re.compile(
@@ -571,7 +604,8 @@ def outcomes_of(
     """The views, visibility (`visible` when public, and the privacy status as
     `visibility_label`) and retention of every post that is a YouTube video, by post id; a
     post whose videos YouTube no longer has is left out. Several videos of one post add their
-    counts and average their averages. NOTICE says why retention could not be read."""
+    counts and average their averages, and keep the first one's retention curve (`curves`).
+    NOTICE says why retention could not be read."""
     videos = claimed(posts)
     found = videos_of(http, env, [v for vs in videos.values() for v in vs])
     kept = {post: [v for v in vs if v in found] for post, vs in videos.items()}
@@ -592,6 +626,10 @@ def outcomes_of(
             if values:
                 total = sum(values)
                 answer[name] = total if name in COUNTS else round(total / len(values), 2)
+        # curves never add up: a post with several videos keeps its first video's
+        curve = next((held[v][CURVE] for v in vs if CURVE in held.get(v, {})), None)
+        if curve:
+            answer["curves"] = {CURVE: curve}
         out[post] = answer
     if notice:
         out[NOTICE] = notice
@@ -599,8 +637,8 @@ def outcomes_of(
 
 
 @mcp.tool(
-    description="The Outcomes Capability: views, visibility and retention of every post that is a"
-    " YouTube video, whoever posted it, by post id."
+    description="The Outcomes Capability: views, visibility, retention and the retention curve of"
+    " every post that is a YouTube video, whoever posted it, by post id."
 )
 def outcomes(posts: list[dict[str, Any]]) -> dict[str, Any]:
     with httpx.Client(timeout=60.0) as http:

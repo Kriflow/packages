@@ -123,8 +123,13 @@ workflow's job, for example the script stage's frontmatter; Swarmify never makes
   call. From YouTube Analytics it adds, for the channel's own videos,
   `youtube_avg_viewed_percent` (averageViewPercentage), `youtube_avg_view_seconds`
   (averageViewDuration) and `youtube_engaged_views` (engagedViews, when the API offers it), one
-  report per video. When Analytics refuses the account (an old sign-in without the scope, or the
-  API not enabled) it answers views alone with a `_notice` saying how to fix it.
+  report per video. Since 1.5.0 it also answers the audience retention report as the curve
+  `youtube_retention` under `curves`: `[elapsed video time ratio, audience watch ratio]` points
+  (elapsedVideoTimeRatio, audienceWatchRatio), one more report per video that has data. Upkeep
+  stores the latest curve as is beside the numbers, and `publish_outcomes` returns it; a post with
+  several videos keeps its first video's curve. When Analytics refuses the account (an old sign-in
+  without the scope, or the API not enabled) it answers views alone with a `_notice` saying how to
+  fix it.
 
 A stage that leaves out `visibility` uploads private, and the workflow editor warns about it. A
 public or unlisted post needs a gate right before its stage; a private one does not. Upkeep

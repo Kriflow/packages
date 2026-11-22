@@ -39,10 +39,16 @@ def page(n: int, instagram: bool = True) -> dict[str, Any]:
     return {"id": f"p{n}", "name": f"Page {n}", "access_token": f"page-tok-{n}", **linked}
 
 
+class Killed(BaseException):
+    """The connector process dying mid-call (a deploy): nothing in it catches this."""
+
+
 class FakeMeta:
     """The Graph API: the long-lived exchange, `me/accounts` answering `pages`, `me` as the
     Page a Page token is for, an Instagram Reels container and the Page's Reels upload.
-    `refused` answers every call with Meta's invalid-token error; `down` fails the Page's."""
+    `refused` answers every call with Meta's invalid-token error; `down` fails the Page's.
+    `cut` kills the call at the first request to that path (`method path`), before Meta sees
+    it or, with `cut_after`, after Meta answered it."""
 
     def __init__(
         self,
@@ -59,8 +65,20 @@ class FakeMeta:
         self.statuses = statuses or [{"status_code": "FINISHED"}]
         self.requests: list[httpx.Request] = []
         self.comment_error: dict[str, Any] | None = None  # Meta's error a comment answers
+        self.cut, self.cut_after = "", False
+        self.posted = "2099-01-01T00:00:00+0000"  # when the Reel captioned Owls was posted
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        cut = self.cut == f"{request.method} {request.url.path}"
+        self.cut = "" if cut else self.cut
+        if cut and not self.cut_after:
+            raise Killed
+        answer = self.answer(request)
+        if cut:
+            raise Killed
+        return answer
+
+    def answer(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if request.url.path.endswith("/comments") and request.method == "POST":
             if self.comment_error:
@@ -87,8 +105,8 @@ class FakeMeta:
                 200,
                 json={
                     "data": [
-                        {"id": "m0", "caption": "older"},
-                        {"id": "m1", "caption": caption},
+                        {"id": "m0", "caption": "older", "timestamp": "2000-01-01T00:00:00+0000"},
+                        {"id": "m1", "caption": caption, "timestamp": self.posted},
                     ]
                 },
             )
@@ -646,7 +664,7 @@ def test_a_retry_after_instagrams_upload_publishes_the_same_container(
     with pytest.raises(ToolError, match="publishing the Reel failed"):
         retried(fake, run_video, "post")
     record = run_video.parents[2] / "post" / "meta-post.json"
-    assert json.loads(record.read_text()) == {"instagram": {"container": "c1"}}
+    assert json.loads(record.read_text())["instagram"] == {"container": "c1"}
     fake.broken, fake.requests, fake.statuses = set(), [], [{"status_code": state}]
     out = retried(fake, run_video, "post")
     assert out["links"] == {"instagram": "https://www.instagram.com/reel/AbC/"}
@@ -682,7 +700,7 @@ def test_a_retry_after_facebooks_start_finishes_or_returns_the_same_video(
     assert dict(parse_qsl(fake.requests[-1].content.decode()))["upload_phase"] == "finish"
     # Meta finished it but the answer was lost: the same video is answered, nothing posted
     record = run_video.parents[2] / "post" / "meta-post.json"
-    record.write_text(json.dumps({"facebook": {"video": "v1"}}))
+    record.write_text(json.dumps({**json.loads(record.read_text()), "facebook": {"video": "v1"}}))
     fake.requests = []
     fake.video_status = {"publishing_phase": {"status": "complete"}}
     assert retried(fake, run_video, "post", platforms=["facebook"])["links"] == out["links"]
@@ -728,6 +746,95 @@ def test_a_fresh_stage_never_reads_another_stages_record(run_video: Path) -> Non
     assert ("POST", "/v26.0/ig1/media") in calls(fake)
     folder = run_video.parents[2] / "post"
     assert sorted(p.name for p in folder.iterdir()) == ["meta-post.1.json", "meta-post.json"]
+
+
+def cut_then_resumed(fake: FakeMeta, video: Path, **params: Any) -> dict[str, Any]:
+    """Publish under the stage's key until the cut kills the call, then call again."""
+    with pytest.raises(Killed):
+        retried(fake, video, "post", **params)
+    return retried(fake, video, "post", **params)
+
+
+def posts(fake: FakeMeta) -> dict[str, int]:
+    """How many Reels each Platform was asked to publish."""
+    finishes = [
+        r
+        for r in fake.requests
+        if r.url.path == "/v26.0/p1/video_reels"
+        and dict(parse_qsl(r.content.decode()))["upload_phase"] == "finish"
+    ]
+    published = [r for r in fake.requests if r.url.path.endswith("/media_publish")]
+    return {"instagram": len(published), "facebook": len(finishes)}
+
+
+def test_a_reel_published_just_before_the_cut_is_found_not_posted_again(run_video: Path) -> None:
+    fake = FakeMeta([])
+    fake.cut, fake.cut_after = "POST /v26.0/ig1/media_publish", True  # its answer never came
+    fake.statuses = [{"status_code": "FINISHED"}, {"status_code": "PUBLISHED"}]
+    out = cut_then_resumed(fake, run_video)
+    assert (out["links"], out["already_posted"]) == (
+        {"instagram": "https://www.instagram.com/reel/AbC/"},
+        True,
+    )
+    assert posts(fake)["instagram"] == 1
+
+
+def test_the_caption_is_only_a_hint_an_older_post_with_it_is_not_the_one(run_video: Path) -> None:
+    fake = FakeMeta([])
+    fake.cut, fake.cut_after = "POST /v26.0/ig1/media_publish", True
+    fake.statuses = [{"status_code": "FINISHED"}, {"status_code": "PUBLISHED"}]
+    fake.posted = "2000-01-02T00:00:00+0000"  # before the first try began
+    with pytest.raises(ToolError, match="unsure: Instagram published the Reel, but no post"):
+        cut_then_resumed(fake, run_video)
+    assert posts(fake)["instagram"] == 1
+
+
+def test_a_facebook_reel_cut_between_upload_and_finish_is_finished_on_the_same_video(
+    run_video: Path,
+) -> None:
+    fake = FakeMeta([])
+    fake.cut, fake.cut_after = "POST /video-upload/v26.0/v1", True  # the file arrived
+    out = cut_then_resumed(fake, run_video, platforms=["facebook"])
+    assert out["links"] == {"facebook": "https://www.facebook.com/reel/v1"}
+    assert "already_posted" not in out and posts(fake) == {"instagram": 0, "facebook": 1}
+    starts = [r for r in fake.requests if r.url.path == "/v26.0/p1/video_reels"]
+    assert len(starts) == 2  # one start, one finish: never a second video
+
+
+def test_a_cut_between_the_two_platforms_posts_each_once(run_video: Path) -> None:
+    fake = FakeMeta([])
+    fake.cut = "POST /v26.0/p1/video_reels"  # Instagram is out; Facebook never started
+    out = cut_then_resumed(fake, run_video, platforms=["instagram", "facebook"])
+    assert set(out["links"]) == {"instagram", "facebook"} and "already_posted" not in out
+    assert posts(fake) == {"instagram": 1, "facebook": 1}
+
+
+def test_a_check_meta_refuses_during_a_resume_is_unsure_never_posted_blind(run_video: Path) -> None:
+    fake = FakeMeta([])
+    fake.cut = "POST /v26.0/ig1/media_publish"
+    with pytest.raises(Killed):
+        retried(fake, run_video, "post")
+    fake.broken = {"/v26.0/c1"}  # the recorded container cannot be read
+    with pytest.raises(ToolError, match="^instagram: unsure: waiting for the Reel failed"):
+        retried(fake, run_video, "post")
+    assert posts(fake)["instagram"] == 0
+
+
+def test_a_changed_file_or_a_broken_record_is_unsure(run_video: Path) -> None:
+    fake = FakeMeta([])
+    fake.cut = "POST /v26.0/ig1/media_publish"
+    with pytest.raises(Killed):
+        retried(fake, run_video, "post")
+    record = run_video.parents[2] / "post" / "meta-post.json"
+    kept = record.read_text()
+    assert json.loads(kept)["fingerprint"].endswith(":r:post")  # written before the upload
+    run_video.write_bytes(b"another cut")
+    with pytest.raises(ToolError, match="^unsure: the video is not the one"):
+        retried(fake, run_video, "post")
+    record.write_text(kept[: len(kept) // 2])  # cut mid-write by an older writer
+    with pytest.raises(ToolError, match="^unsure: the Publish Record meta-post.json"):
+        retried(fake, run_video, "post")
+    assert posts(fake)["instagram"] == 0
 
 
 def test_without_a_run_folder_nothing_is_recorded(video: Path, tmp_path: Path) -> None:
@@ -902,7 +1009,8 @@ def test_outcomes_with_a_refused_token_are_an_auth_failure() -> None:
 def test_the_manifest_declares_a_world_sign_in_the_package_finishes() -> None:
     m = read_manifest(HERE)
     assert (m["name"], m["kind"], m["stage_types"]) == ("meta", "publish", ["connector"])
-    assert (m["capabilities"], m["primary_metric"]) == (["publish", "outcomes"], "views")
+    assert m["capabilities"] == ["publish", "outcomes", "safe_resume"]  # resumes after a cut
+    assert m["primary_metric"] == "views"
     login, account, chosen = m["config"]
     assert (login["key"], login["label"], login["type"]) == (
         "meta_config_id",
@@ -942,10 +1050,10 @@ def registry(data: Path) -> Connectors:
 
 def test_the_installed_package_answers_over_stdio_in_its_sandbox(tmp_path: Path) -> None:
     connectors = registry(tmp_path)
-    assert connectors.install_defaults()["meta"] == "1.2.0"
+    assert connectors.install_defaults()["meta"] == "1.3.0"
     connectors.offer_defaults("w")
     found = connectors.find("w", "meta")
-    assert found is not None and found.version == "1.2.0"
+    assert found is not None and found.version == "1.3.0"
     assert sorted(t.name for t in connectors.transport.list_tools(found, {})) == [
         "account",
         "outcomes",

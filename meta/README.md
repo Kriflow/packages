@@ -82,6 +82,18 @@ the account's newest 25 posts by its caption when Meta published it but its answ
 recorded Facebook video is answered when its `publishing_phase` is complete, uploaded to again
 when its upload never completed, then finished. A stage visited again gets a new key, so a new
 record.
+
+This record is the call's Publish Record, and the package declares that its publish resumes
+safely (`safe_resume`), so a publish cut off by a deploy is called again with the same key. The
+record starts with a fingerprint (the file's hash, the run and the key) and the time, before the
+first byte goes out, and is written whole beside itself, then renamed into place, so a cut never
+leaves it half written. A Platform that finds its post from an earlier try is answered as found,
+and when every Platform's was, the answer carries `already_posted`. It answers `unsure:` instead
+of posting blind when the record cannot be read, the file differs from the fingerprint's, or a
+check of a recorded container or video fails; Swarmify then asks "Did this post go out?". The
+caption is only a hint: a `PUBLISHED` container is matched to a post with its caption made since
+the record began, and none is unsure. With two Platforms, an unsure one beside one that posted
+is listed under `failed` with its `unsure:` reason, so the one that posted is never posted again.
 ## Setup
 
 Two fields per world, so each world posts as its own brand's Page and Instagram account, and one

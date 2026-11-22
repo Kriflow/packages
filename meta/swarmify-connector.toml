@@ -1,7 +1,8 @@
 # The Meta connector (README.md beside this file). A default package: Swarmify installs it from
 # this folder and enables it for every world that has not decided otherwise.
 name = "meta"
-version = "1.3.0"
+version = "1.3.1"
+contract = 1
 label = "Meta"
 about = "Posts Reels to Instagram and a Facebook Page through the Graph API."
 kind = "publish"
@@ -62,7 +63,7 @@ description = "the video"
 media_type = "video/mp4"
 
 [setup]
-help_url = "https://github.com/wagleanuj/swarmify/tree/main/connectors/meta#setup"
+help_url = "https://github.com/Kriflow/packages/tree/main/meta#setup"
 
 # The login configuration of the operator's Meta app (Facebook Login for Business), which names
 # the permissions. Sign-in sends it as the authorize URL's config_id.

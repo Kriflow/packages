@@ -2,7 +2,7 @@
 
 The Blender render connector: our stdio MCP server that renders a Blender project's shots on the
 GPU, runs the project's own finish step and writes the stage's video (ADR 0015). It is a Connector
-Package (ADR 0019) installed with Swarmify from this folder into
+Package (ADR 0019) installed with Kriflow from its release tag here into
 `<data dir>/packages/blender_render/<version>/`, but **not enabled by default**
 (`enable_by_default = false`): a world enables it on the Connectors page, with `blender_build`,
 when it makes videos in Blender. Everything Swarmify knows of it is `swarmify-connector.toml`.

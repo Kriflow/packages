@@ -5,7 +5,7 @@ name = "blender_build"
 description = "Writes a Blender project from the script in a sandboxed coding session, checking shots with stills, then renders it on the GPU."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "blender_build"
-ref = "blender_build-v1.1.2"
+ref = "blender_build-v1.1.3"
 contract = 1
 permissions = [
   "owned_folders: blender_templates",
@@ -18,7 +18,7 @@ name = "blender_render"
 description = "Renders a Blender project's shots on the GPU, then its finish step, into one video."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "blender_render"
-ref = "blender_render-v1.0.7"
+ref = "blender_render-v1.0.8"
 contract = 1
 permissions = [
   "install_network: pypi.org",
@@ -37,7 +37,7 @@ name = "hyperframes_build"
 description = "Writes a HyperFrames project (HTML and GSAP) from the script in a sandboxed coding session, then renders it. Needs Node 22."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "hyperframes_build"
-ref = "hyperframes_build-v1.0.2"
+ref = "hyperframes_build-v1.0.3"
 contract = 1
 permissions = [
   "network: registry.npmjs.org",
@@ -55,7 +55,7 @@ name = "hyperframes_render"
 description = "Renders a script with the HyperFrames CLI. Needs Node 22 and a HyperFrames project."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "hyperframes_render"
-ref = "hyperframes_render-v1.0.2"
+ref = "hyperframes_render-v1.0.3"
 contract = 1
 permissions = [
   "network: localhost",
@@ -75,7 +75,7 @@ name = "meta"
 description = "Posts Reels to Instagram and a Facebook Page through the Graph API."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "meta"
-ref = "meta-v1.3.0"
+ref = "meta-v1.3.1"
 contract = 1
 permissions = [
   "network: graph.facebook.com",
@@ -95,7 +95,7 @@ name = "remotion_build"
 description = "Writes a Remotion project from the script in a sandboxed coding session, then renders it. Needs Node."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "remotion_build"
-ref = "remotion_build-v1.0.4"
+ref = "remotion_build-v1.0.5"
 contract = 1
 permissions = [
   "network: registry.npmjs.org",
@@ -112,7 +112,7 @@ name = "remotion_render"
 description = "Renders a script with the Remotion CLI. Needs Node and a Remotion project."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "remotion_render"
-ref = "remotion_render-v1.0.9"
+ref = "remotion_render-v1.0.10"
 contract = 1
 permissions = [
   "network: localhost",
@@ -133,7 +133,7 @@ name = "slack"
 description = "Posts each gate to a Slack channel with a button per answer, and updates the message once the gate is answered, there or in Kriflow. A reply in a gate's thread asks the run's assistant, whose proposals come with Apply and Not now. Needs a Slack app of your own in Socket Mode (its README)."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "slack"
-ref = "slack-v1.1.2"
+ref = "slack-v1.1.3"
 contract = 1
 permissions = [
   "network: slack.com",
@@ -151,7 +151,7 @@ name = "speech"
 description = "Voices a script, one take per scene, with word timings and cut points. Needs a speech engine (its README, Speech engines)."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "speech"
-ref = "speech-v1.3.1"
+ref = "speech-v1.3.2"
 contract = 1
 permissions = [
   "install_network: pypi.org",
@@ -166,7 +166,7 @@ name = "upload_post"
 description = "Posts or schedules a video to YouTube, TikTok and Instagram through Upload-Post."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "upload_post"
-ref = "upload_post-v1.0.1"
+ref = "upload_post-v1.0.2"
 contract = 1
 permissions = [
   "network: api.upload-post.com",
@@ -181,7 +181,7 @@ name = "youtube"
 description = "Uploads to YouTube through the Data API; a schedule keeps it private until then."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "youtube"
-ref = "youtube-v1.6.0"
+ref = "youtube-v1.6.1"
 contract = 1
 permissions = [
   "network: www.googleapis.com",

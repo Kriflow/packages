@@ -1,7 +1,8 @@
 # The speech connector (README.md beside this file). A default package: Swarmify installs it from
 # this folder and enables it for every world that has not decided otherwise.
 name = "speech"
-version = "1.3.1"
+version = "1.3.2"
+contract = 1
 label = "Speech"
 about = "Voices a script, one take per scene, with word timings and cut points. Needs a speech engine (its README, Speech engines)."
 kind = "stage"
@@ -137,7 +138,7 @@ minimum = 0
 description = "Seconds of silence after the line, 0.3 usually"
 
 [setup]
-help_url = "https://github.com/wagleanuj/swarmify/tree/main/connectors/speech#setup"
+help_url = "https://github.com/Kriflow/packages/tree/main/speech#setup"
 
 [[config]]
 key = "speech_endpoints"

@@ -2,7 +2,7 @@
 
 The HyperFrames render connector: our stdio MCP wrapper over `hyperframes render` (ADR 0015). It
 renders a script artifact through a HyperFrames project (HTML, CSS and a GSAP timeline) into a
-video. It is a Connector Package (ADR 0019) installed with Swarmify from this folder into
+video. It is a Connector Package (ADR 0019) installed with Kriflow from its release tag here into
 `<data dir>/packages/hyperframes_render/<version>/`, but **not enabled by default**
 (`enable_by_default = false`): Remotion stays a world's video engine until its operator enables
 this package on the Connectors page. Everything Swarmify knows of it is `swarmify-connector.toml`.
@@ -133,4 +133,4 @@ outside its stage or into a Template and reach the internet is refused each time
 logged. One
 real install and render runs when you opt in, with a HyperFrames project whose `node_modules` are
 installed (it is copied into a run's folder, where a build would have written it):
-`SWARMIFY_REAL_BUILD=1 SWARMIFY_HYPERFRAMES_PROJECT=<project> uv run pytest connectors/hyperframes_render -k real_render -s`.
+`SWARMIFY_REAL_BUILD=1 SWARMIFY_HYPERFRAMES_PROJECT=<project> uv run pytest --no-cov connectors/hyperframes_render -k real_render -s` in a core checkout that `tools/test_packages.sh <core> hyperframes_render` has filled.

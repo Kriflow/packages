@@ -745,9 +745,17 @@ IG_METRICS = "views,reach,ig_reels_avg_watch_time"
 REEL = {"instagram_reach": 6, "instagram_avg_watch_seconds": 8.25}
 
 
-def insights(gone: tuple[str, ...] = ()) -> Any:
+UNPERMITTED = {
+    "message": "(#10) Application does not have permission for this action",
+    "type": "OAuthException",
+    "code": 10,
+}
+
+
+def insights(gone: tuple[str, ...] = (), unpermitted: tuple[str, ...] = ()) -> Any:
     """The Graph API's reads for Outcomes: `me`, the Instagram account's media in pages of two,
-    and views of each media and Reel; `gone` answers Meta's error for that media or Reel."""
+    and views of each media and Reel; `gone` answers Meta's error for that media or Reel, and
+    each Platform in `unpermitted` its permission error for every insights read."""
     media = [
         {"id": "m1", "permalink": "https://www.instagram.com/reel/AbC/"},
         {"id": "m2", "permalink": "https://www.instagram.com/p/Xy_z/"},
@@ -767,6 +775,9 @@ def insights(gone: tuple[str, ...] = ()) -> Any:
             more = {"cursors": {"after": str(start + 2)}, "next": "x"} if start + 2 < 3 else {}
             return httpx.Response(200, json={"data": media[start : start + 2], "paging": more})
         thing = path.split("/")[0]
+        platform = "facebook" if path.endswith("/video_insights") else "instagram"
+        if path.endswith("insights") and platform in unpermitted:
+            return httpx.Response(403, json={"error": UNPERMITTED})
         if thing in gone:
             return httpx.Response(400, json={"error": {"message": "no such object", "code": 100}})
         if path.endswith("/insights") and q["metric"] == IG_METRICS:
@@ -798,8 +809,10 @@ BOTH = {
 }
 
 
-def outcomes(posts: list[dict[str, Any]], gone: tuple[str, ...] = ()) -> dict[str, Any]:
-    with httpx.Client(transport=httpx.MockTransport(insights(gone))) as http:
+def outcomes(
+    posts: list[dict[str, Any]], gone: tuple[str, ...] = (), unpermitted: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    with httpx.Client(transport=httpx.MockTransport(insights(gone, unpermitted))) as http:
         return meta.outcomes_of(http, {"META_ACCESS_TOKEN": "page-tok"}, posts)
 
 
@@ -858,6 +871,28 @@ def test_meta_failing_for_one_post_leaves_the_others() -> None:
     assert outcomes([BOTH, other], gone=("m1", "v1")) == {"m2": {"views": 5, "instagram_views": 5}}
 
 
+def test_a_missing_insights_permission_is_a_notice_and_the_other_platform_still_counts() -> None:
+    reel = {**BOTH, "id": "m3", "links": {"instagram": "https://instagram.com/reel/Old"}}
+    graph = insights(unpermitted=("instagram",))
+    with httpx.Client(transport=httpx.MockTransport(graph)) as http:
+        answer = meta.outcomes_of(http, {"META_ACCESS_TOKEN": "page-tok"}, [BOTH, reel])
+    notice = answer.pop(meta.NOTICE)
+    assert "instagram_manage_insights" in notice and "sign in to Meta again" in notice
+    assert "read_insights" not in notice
+    assert answer == {"m1": {"views": 4, "facebook_views": 4}}
+    # the first refusal skips Instagram's insights for the rest of the pass
+    assert sum(r.url.path.endswith("/insights") for r in graph.seen) == 1
+
+    answer = outcomes([BOTH], unpermitted=("facebook",))
+    assert "read_insights" in answer.pop(meta.NOTICE)
+    assert answer == {"m1": {"views": 7, "instagram_views": 7, **REEL}}
+
+    answer = outcomes([BOTH], unpermitted=("instagram", "facebook"))
+    assert answer.keys() == {meta.NOTICE}
+    assert "instagram_manage_insights" in answer[meta.NOTICE]
+    assert "read_insights" in answer[meta.NOTICE]
+
+
 def test_outcomes_with_a_refused_token_are_an_auth_failure() -> None:
     with FakeMeta([page(1)], refused=True).http() as http, pytest.raises(ToolError) as refused:
         meta.outcomes_of(http, {"META_ACCESS_TOKEN": "page-tok"}, [BOTH])
@@ -907,10 +942,10 @@ def registry(data: Path) -> Connectors:
 
 def test_the_installed_package_answers_over_stdio_in_its_sandbox(tmp_path: Path) -> None:
     connectors = registry(tmp_path)
-    assert connectors.install_defaults()["meta"] == "1.1.0"
+    assert connectors.install_defaults()["meta"] == "1.2.0"
     connectors.offer_defaults("w")
     found = connectors.find("w", "meta")
-    assert found is not None and found.version == "1.1.0"
+    assert found is not None and found.version == "1.2.0"
     assert sorted(t.name for t in connectors.transport.list_tools(found, {})) == [
         "account",
         "outcomes",

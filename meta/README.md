@@ -103,7 +103,7 @@ shared:
 Once: create a Meta app of type Business with Facebook Login for Business, add a login
 configuration for a user access token with `pages_show_list`, `pages_read_engagement`,
 `pages_manage_posts`, `instagram_basic`, `instagram_content_publish`, `read_insights`,
-`instagram_manage_comments` and `pages_manage_engagement` (the last two for the `comment`; plus
+`instagram_manage_insights`, `instagram_manage_comments` and `pages_manage_engagement` (the last two for the `comment`; plus
 `business_management` when the app belongs to a business portfolio), and add the redirect URI the
 Connectors page shows, `<the address you open Swarmify at>/api/setup/oauth/callback`, to Valid
 OAuth Redirect URIs. While the app is in Development mode, everyone with a role on it can grant
@@ -118,6 +118,8 @@ A token Meta refuses (error code 190, or an `OAuthException`) fails the call wit
 and marks the account **Needs sign-in**; sign in again from the Connectors page. Before 1.1.0
 the login configuration needed no comment permissions: add `instagram_manage_comments` and
 `pages_manage_engagement` to it and sign in again once, or the `comment` is recorded as failed.
+Before 1.2.0 it needed no `instagram_manage_insights`: add it and sign in again, or Instagram's
+Outcomes are left out with a notice.
 
 ## What it answers
 
@@ -137,7 +139,11 @@ the login configuration needed no comment permissions: add `instagram_manage_com
   metric and `views`. An Instagram link names a shortcode, not a media ID, so the account's latest
   1,000 media are listed to find it; a post that is not among them, or not the world's account's,
   is left out. Meta failing for one post leaves out only that post's Platform; a refused token
-  fails the call with `auth_failed`.
+  fails the call with `auth_failed`. A sign-in without the insights permission of a Platform
+  (`instagram_manage_insights` for Instagram, `read_insights` for Facebook; Meta's error codes
+  10 and 200 to 299) is no failure: that Platform is skipped for the pass and the answer's
+  `_notice` names the permission to add and says to sign in again, while the other Platform's
+  numbers still count.
 
 A stage that posts only a Facebook draft (`platforms: [facebook]`, `visibility: draft`) posts
 privately and needs no gate (`private_when`); every stage with Instagram is gated.
@@ -154,7 +160,8 @@ Instagram and one Platform failing while the other posts. Then retries: the same
 published or found after Instagram's upload, the same video finished or answered after
 Facebook's start, only Facebook redone after Instagram posted, and a new key never reading another
 stage's record. Then `outcomes`: views per Platform and their sum, another connector's Instagram
-link, posts left out and one post's error. Then the package installed through the
+link, posts left out, one post's error, and a missing insights permission answered as a
+notice per Platform. Then the package installed through the
 real install path, answering over stdio MCP in its sandbox, and a workflow with an Instagram stage
 and no gate refused when saved. Run it with `uv run pytest connectors/meta` from the repository
 root.

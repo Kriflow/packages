@@ -139,10 +139,19 @@ listed on the Needs-you page. Before 1.3.0 the answer named YouTube's `privacy` 
 from then are still read.
 - `channel` answers the title of the channel the account posts to.
 
-Each upload is tagged `swarmify-<idempotency key>` beside its own tags, and before uploading the
-connector looks for that tag among the channel's latest 50 uploads (3 quota units), so retrying a
-failed publish stage answers the video an earlier attempt already put up instead of posting it
-twice. By default uploads have their own quota of 100 a day; the retry check and the other reads
+A publish cut off mid-flight (a deploy restarting Swarmify) resumes safely, so Swarmify calls it
+again with the same idempotency key instead of asking. Each call keeps a Publish Record,
+`youtube-<key>.json`, in the stage's folder of the run: the file's fingerprint before the first
+byte, then the resumable upload session, the video's id and the comment's. Called again, it
+answers a recorded video as is, asks a recorded session where it stands and finishes the upload
+in that same session (never a second video), and answers `already_posted` when an earlier try
+made the video. When it cannot tell (the session expired and the tag below does not find the
+video, Google does not answer, the record is unreadable or the file changed) it answers
+`unsure:` and Swarmify asks "Did this post go out?" instead of uploading blind.
+
+Each upload is also tagged `swarmify-<idempotency key>` beside its own tags, and before a new
+upload the connector looks for that tag among the channel's latest 50 uploads (3 quota units),
+an extra check that answers the video an earlier attempt already put up. By default uploads have their own quota of 100 a day; the retry check and the other reads
 share 10,000 units a day
 ([quota costs](https://developers.google.com/youtube/v3/determine_quota_cost)).
 

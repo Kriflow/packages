@@ -38,13 +38,26 @@ A `comment` (a param, the metadata's, or the gate's edit) is posted on the video
 1.4.0 lacks it and is told to sign in again. A retry that finds its video already up first looks
 for the same text among the video's comments, so it never comments twice.
 
-A retried publish stage calls again with the same `idempotency_key` (the stage id), and the
-first call may have uploaded before it failed. So an upload is tagged `swarmify-<key>`, and
-before uploading the connector reads the channel's latest 50 uploads (`channels.list` mine, then
-`playlistItems.list` and `videos.list`, 3 quota units) and answers the tagged video if there is
-one.
+Its publish resumes safely (the `safe_resume` capability): a call cut off mid-flight, by a deploy
+say, is called again with the same `idempotency_key`. Each call keeps a Publish Record,
+`youtube-<key>.json` in the stage's folder of the run, written whole and renamed into place: a
+fingerprint (the file's hash, the run and the key) before the first byte, then the resumable
+upload session as soon as YouTube gives it, then the video's id and the comment's. A call again
+reads it first: a recorded video is answered as is; a recorded session is asked where it stands
+(complete: its video; incomplete: the upload goes on from the byte YouTube confirms, in the same
+session, so no second video is ever made); a session gone (expired) is looked for by its tag
+below, and not finding it answers `unsure:` instead of uploading again, as do a record that
+cannot be read, a different file under the same record and a check Google does not answer.
+An answer from an earlier try's video carries `already_posted`.
+
+Every upload is also tagged `swarmify-<key>`, and before a new upload the connector reads the
+channel's latest 50 uploads (`channels.list` mine, then `playlistItems.list` and `videos.list`, 3
+quota units) and answers the tagged video if there is one: an extra check, never a reason to
+upload again.
 """
 
+import hashlib
+import json
 import os
 import re
 from collections.abc import Mapping
@@ -89,6 +102,8 @@ COMMENT_SCOPE_FAILED = (
     " (youtube.force-ssl); sign in to YouTube again on the Connectors page"
 )
 MAX_IDS = 50
+RESENDS = 5
+"""How often a dropped upload goes on from the byte YouTube confirms before it gives up unsure."""
 
 VISIBILITIES = ("public", "unlisted", "private")
 TITLE_MAX = 100  # YouTube's limit
@@ -308,6 +323,87 @@ def uploaded_under(http: httpx.Client, auth: dict[str, str], tag: str) -> str | 
     return None
 
 
+def record_of(input_path: Path, idempotency_key: str) -> Path | None:
+    """The call's Publish Record: `youtube-<key>.json` in the stage's folder of the run its input
+    is in (`<world>/runs/<run>/<stage id>`, the one folder it may write; the key is the stage id,
+    then `.<visit>` or `.again<n>`). None outside a run."""
+    run = next((p for p in input_path.parents if p.parent.name == "runs"), None)
+    folder = run / idempotency_key.split(".")[0] if run and idempotency_key else None
+    return folder / f"youtube-{idempotency_key}.json" if folder and folder.is_dir() else None
+
+
+def _read(record: Path | None) -> dict[str, str]:
+    """What the record holds; {} when there is none. One that cannot be read is unsure."""
+    if record is None or not record.exists():
+        return {}
+    try:
+        kept = json.loads(record.read_text())
+        assert isinstance(kept, dict)
+        return kept
+    except (OSError, ValueError, AssertionError) as exc:
+        raise ToolError(f"unsure: the Publish Record {record.name} could not be read") from exc
+
+
+def _write(record: Path | None, kept: Mapping[str, str]) -> None:
+    """Written whole beside it, then renamed over it: a cut leaves the old or the new record."""
+    if record is not None:
+        part = record.with_name(record.name + ".part")
+        part.write_text(json.dumps(kept))
+        os.replace(part, record)
+
+
+def fingerprint(video: Path, record: Path | None, idempotency_key: str) -> str:
+    """The file's hash with the run and the key (the stage and its visit) it is posted under."""
+    with video.open("rb") as body:
+        digest = hashlib.file_digest(body, "sha256").hexdigest()
+    run = record.parents[1].name if record else ""
+    return f"{digest}:{run}:{idempotency_key}"
+
+
+def where(http: httpx.Client, auth: dict[str, str], session: str, size: int) -> int | str | None:
+    """Where an upload session stands: the next byte to send, the video's id once it is whole,
+    or None when the session is gone (expired). Unsure when Google cannot say."""
+    try:
+        got = http.put(session, headers={**auth, "Content-Range": f"bytes */{size}"})
+    except httpx.HTTPError as exc:
+        raise ToolError("unsure: the upload session could not be reached") from exc
+    if got.status_code in (200, 201):
+        return str(got.json()["id"])
+    if got.status_code == 308:
+        reached = got.headers.get("range", "")
+        return int(reached.rpartition("-")[2]) + 1 if reached else 0
+    if got.status_code in (404, 410):
+        return None
+    raise ToolError(f"unsure: the upload session answered {got.status_code}")
+
+
+def send(http: httpx.Client, auth: dict[str, str], session: str, video: Path, start: int) -> str:
+    """Send the file through the session from byte `start`; after a dropped connection, from the
+    byte Google confirms, in the same session. The video's id."""
+    size = video.stat().st_size
+    for _ in range(RESENDS):
+        headers = {**auth, "Content-Type": "video/*", "Content-Length": str(size - start)}
+        if start:
+            headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
+        try:
+            with video.open("rb") as body:
+                body.seek(start)
+                sent = http.put(session, content=body, headers=headers)
+        except httpx.HTTPError:
+            sent = None
+        if sent is not None and sent.status_code in (200, 201):
+            return str(sent.json()["id"])
+        if sent is not None and sent.status_code != 308:
+            raise _error(sent, "uploading the video")
+        reached = where(http, auth, session, size)
+        if reached is None:
+            raise ToolError("unsure: the upload session is gone mid-upload")
+        if isinstance(reached, str):
+            return reached
+        start = reached
+    raise ToolError(f"unsure: the upload dropped {RESENDS} times; YouTube may hold part of it")
+
+
 def upload(
     http: httpx.Client,
     env: Mapping[str, str],
@@ -320,34 +416,67 @@ def upload(
     idempotency_key: str = "",
     keywords: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Upload `video`, or find the one an earlier try under `idempotency_key` uploaded. Answers
-    the publish contract's `id`, `url` and `status`."""
+    """Upload `video`, or find or finish the one an earlier try under `idempotency_key` began,
+    from its Publish Record. Answers the publish contract's `id`, `url` and `status`, and
+    `_found` when an earlier try made the video. Fails `unsure:` when it cannot tell."""
     if not video.is_file():
         raise ToolError(f"the video {video} does not exist")
     status: dict[str, Any] = {"privacyStatus": visibility, "selfDeclaredMadeForKids": made_for_kids}
     if schedule:
         status = {**status, "privacyStatus": "private", "publishAt": schedule}
     auth = _headers(env)
+    record = record_of(video, idempotency_key)
+    kept = _read(record)
+    marked = fingerprint(video, record, idempotency_key)
+    if kept and kept.get("fingerprint") != marked:
+        raise ToolError("unsure: the video is not the one an earlier try began posting")
 
-    def answer(video_id: str) -> dict[str, Any]:
+    def keep(**values: str) -> None:
+        kept.update(values)
+        _write(record, kept)
+
+    def answer(video_id: str, found: bool = False) -> dict[str, Any]:
+        keep(id=video_id)
         return {
             "id": video_id,
             "url": f"https://youtu.be/{video_id}",
             "status": "scheduled" if schedule else "published",
             "public": visibility == "public",  # a scheduled video goes public at its time
             **({"scheduled_for": schedule} if schedule else {}),
+            **({"_found": True} if found else {}),
         }
 
+    tag = f"swarmify-{idempotency_key}"
+    size = video.stat().st_size
+    if kept.get("id"):
+        return answer(kept["id"], True)
+    if session := kept.get("session"):
+        reached = where(http, auth, session, size)
+        if isinstance(reached, int):
+            return answer(send(http, auth, session, video, reached))
+        if reached is not None:
+            return answer(reached, True)
+        # The session expired. Only the tag says whether it made the video, and a video's
+        # listing may lag, so not finding it is no reason to upload again.
+        try:
+            done = uploaded_under(http, auth, tag)
+        except ToolError as exc:
+            raise ToolError(f"unsure: the upload session is gone and {exc}") from exc
+        if done is None:
+            raise ToolError(
+                "unsure: the upload session is gone and the video is not among the channel's"
+                " latest uploads"
+            )
+        return answer(done, True)
+    keep(fingerprint=marked)  # the intent, before the first byte
     snippet: dict[str, Any] = {"title": title, "description": description}
     keywords = list(keywords or [])
     if idempotency_key:
-        tag = f"swarmify-{idempotency_key}"
         if done := uploaded_under(http, auth, tag):
-            return {**answer(done), "_found": True}
+            return answer(done, True)
         keywords.append(tag)  # beside the real tags, never instead
     if keywords:
         snippet["tags"] = keywords
-    size = video.stat().st_size
     started = http.post(
         UPLOAD_URL,
         params={"uploadType": "resumable", "part": "snippet,status"},
@@ -356,17 +485,8 @@ def upload(
     )
     if started.status_code != 200 or "location" not in started.headers:
         raise _error(started, "starting the YouTube upload")
-    # ponytail: one PUT of the whole file; resume an interrupted upload by range when videos
-    # get big enough for a dropped connection to matter.
-    with video.open("rb") as body:
-        sent = http.put(
-            started.headers["location"],
-            content=body,
-            headers={**auth, "Content-Type": "video/*", "Content-Length": str(size)},
-        )
-    if sent.status_code not in (200, 201):
-        raise _error(sent, "uploading the video")
-    return answer(sent.json()["id"])
+    keep(session=started.headers["location"])
+    return answer(send(http, auth, started.headers["location"], video, 0))
 
 
 def comment_on(
@@ -440,12 +560,17 @@ def publish_fields(
         tags(fields.get("tags")),
     )
     found = out.pop("_found", False)  # an earlier try uploaded it, and may have commented
+    if found:
+        out["already_posted"] = True
     text = str(fields.get("comment") or "").strip()
     if not text:
         return out
+    record = record_of(Path(input_path), idempotency_key)
+    kept = _read(record)
     comments, failed = {}, {}
     try:
-        comments["youtube"] = comment_on(http, env, out["id"], text, found)
+        comments["youtube"] = kept.get("comment") or comment_on(http, env, out["id"], text, found)
+        _write(record, {**kept, "comment": comments["youtube"]})
     except ToolError as exc:
         failed["youtube"] = str(exc)
     return {**out, "comments": comments, "comment_failed": failed}

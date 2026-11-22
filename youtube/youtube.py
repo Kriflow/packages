@@ -1,0 +1,793 @@
+"""The YouTube connector: a stdio MCP server over the YouTube Data API (ADR 0015), answering the
+publish contract (ADR 0007) as a Connector Package (ADR 0019).
+
+Four tools. `preview` answers the fields a publish stage will post and every problem that would
+stop it; the core shows them at the gate and sends back what was confirmed. `publish` uploads the
+confirmed values with `videos.insert` (resumable upload, one request for the metadata and one for
+the bytes) and answers the video's id and link. With a `schedule` the video is uploaded private
+with `publishAt`, and YouTube makes it public at that time: `publishAt` can be set only while the
+privacy status is private; it answers `public` and, scheduled, `scheduled_for`. `outcomes` (the
+Capability) answers the views and visibility (`visible`, `visibility_label`) of every post
+the core passes that is a YouTube video, by its own id or by a YouTube link, so a video another
+connector posted counts too; one `videos.list` call per 50 videos (part statistics and status, 1
+quota unit). It adds retention from YouTube Analytics (average percentage viewed, average view
+duration, engaged views), one report per video, and the audience retention curve as the curve
+`youtube_retention` ([elapsed video time ratio, audience watch ratio] points), one more report per
+video that has data; when the account may not read Analytics it answers the views alone with a
+`_notice` saying how to fix it. `channel` answers the title of the channel
+the account posts to (`channels.list` mine, 1 quota unit).
+
+The account is the Manifest's `youtube` oauth field: Swarmify signs in, keeps the token set and
+starts this process with a current access token as YOUTUBE_ACCESS_TOKEN. A token Google refuses
+fails the tool with `auth_failed`, which marks the field for sign-in again.
+
+`preview` takes the stage's `inputs` (file names), `params`, `metadata` (the frontmatter of the
+file `params.metadata` names) and `edits` (the gate's). Params: `title`, `description`,
+`visibility` (public, unlisted or private), `made_for_kids` (YouTube's COPPA flag, false by
+default) and an optional `schedule`: ISO 8601 with a timezone, or relative, `HH:MM` (the next such
+time) or `+Nd HH:MM` (N days from now), either with an optional IANA timezone after it (UTC by
+default). The metadata's `title`, `description`, `hashtags` and `tags` win over the params, and
+the gate's edits over all. `hashtags` (a list, or one string; `#` optional) go out as the
+description's last line, where YouTube shows up to three above the title; `tags` (a list, or one
+comma-separated string) go to YouTube's tags beside the retry tag. A scheduled video stays
+private until its time, then goes public, so a schedule needs `visibility: public`.
+
+A `comment` (a param, the metadata's, or the gate's edit) is posted on the video once it is up
+(`commentThreads.insert`, 50 quota units), answered as `comments` (its id) or `comment_failed`
+(why), which never fails the post. It needs the `youtube.force-ssl` scope: a sign-in from before
+1.4.0 lacks it and is told to sign in again. A retry that finds its video already up first looks
+for the same text among the video's comments, so it never comments twice.
+
+Its publish resumes safely (the `safe_resume` capability): a call cut off mid-flight, by a deploy
+say, is called again with the same `idempotency_key`. Each call keeps a Publish Record,
+`youtube-<key>.json` in the stage's folder of the run, written whole and renamed into place: a
+fingerprint (the file's hash, the run and the key) before the first byte, then the resumable
+upload session as soon as YouTube gives it, then the video's id and the comment's. A call again
+reads it first: a recorded video is answered as is; a recorded session is asked where it stands
+(complete: its video; incomplete: the upload goes on from the byte YouTube confirms, in the same
+session, so no second video is ever made); a session gone (expired) is looked for by its tag
+below, and not finding it answers `unsure:` instead of uploading again, as do a record that
+cannot be read, a different file under the same record and a check Google does not answer.
+An answer from an earlier try's video carries `already_posted`.
+
+Every upload is also tagged `swarmify-<key>`, and before a new upload the connector reads the
+channel's latest 50 uploads (`channels.list` mine, then `playlistItems.list` and `videos.list`, 3
+quota units) and answers the tagged video if there is one: an extra check, never a reason to
+upload again.
+"""
+
+import hashlib
+import json
+import os
+import re
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import httpx
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+
+UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
+COMMENT_THREADS_URL = "https://www.googleapis.com/youtube/v3/commentThreads"
+ANALYTICS_URL = "https://youtubeanalytics.googleapis.com/v2/reports"
+ANALYTICS_START = "2005-04-23"  # before any video: a video's whole life
+TOKEN = "YOUTUBE_ACCESS_TOKEN"
+RETENTION = {
+    "averageViewPercentage": "youtube_avg_viewed_percent",
+    "averageViewDuration": "youtube_avg_view_seconds",
+    "engagedViews": "youtube_engaged_views",
+}
+"""YouTube Analytics' metrics, by the outcome names they are recorded under."""
+COUNTS = {"youtube_engaged_views"}
+CURVE = "youtube_retention"
+"""The audience retention curve's name: [elapsed video time ratio, audience watch ratio] points."""
+NOTICE = "_notice"
+"""The outcomes answer's key for why retention could not be read."""
+SCOPE_NOTICE = (
+    "YouTube retention is not read: the saved sign-in predates the YouTube Analytics"
+    " permission. Sign in to YouTube again on the Connectors page to get retention."
+)
+API_NOTICE = (
+    "YouTube retention is not read: enable the YouTube Analytics API in the Google Cloud"
+    " project of the YouTube sign-in."
+)
+COMMENT_SCOPE_FAILED = (
+    "the comment was not posted: the saved sign-in predates the comment permission"
+    " (youtube.force-ssl); sign in to YouTube again on the Connectors page"
+)
+MAX_IDS = 50
+RESENDS = 5
+"""How often a dropped upload goes on from the byte YouTube confirms before it gives up unsure."""
+
+VISIBILITIES = ("public", "unlisted", "private")
+TITLE_MAX = 100  # YouTube's limit
+DESCRIPTION_BYTES = 5_000  # YouTube's limit
+HASHTAGS_MAX = 5  # well under YouTube's 60: more reads as spam (research 2026-10-30)
+TAGS_CHARS = 500  # YouTube's limit for all tags together, commas and quotes included
+# Each upload is tagged swarmify-<stage id>.<visit>: about 45 characters with its comma.
+TAGS_ROOM = TAGS_CHARS - 50
+EDITABLE = ("title", "description", "hashtags", "tags", "comment")
+_HASHTAG = re.compile(r"^\w+$")
+
+mcp = MCPServer("youtube")
+
+
+# What goes out
+
+
+def _words(value: Any, split: str) -> list[str]:
+    """A list, or one string split on `split`, without empties."""
+    raw = value if isinstance(value, list) else re.split(split, str(value or ""))
+    return [w for w in (str(v).strip() for v in raw) if w]
+
+
+def hashtags(value: Any) -> list[str]:
+    """Each hashtag without its `#`."""
+    return [w.lstrip("#") for w in _words(value, r"[\s,]+") if w.lstrip("#")]
+
+
+def tags(value: Any) -> list[str]:
+    return _words(value, r",")
+
+
+def tags_length(names: list[str]) -> int:
+    """How YouTube counts tags: a tag with a space is counted as if quoted, commas count."""
+    return sum(len(t) + (2 if " " in t else 0) for t in names) + max(len(names) - 1, 0)
+
+
+def hashtag_line(names: list[str]) -> str:
+    return " ".join(f"#{h}" for h in names)
+
+
+def full_description(text: str, tagged: list[str]) -> str:
+    """The description as it goes out: the hashtags as its last line."""
+    line = hashtag_line(tagged)
+    return f"{text.strip()}\n\n{line}" if text.strip() and line else text.strip() or line
+
+
+_RELATIVE = re.compile(r"^(?:\+(\d+)d\s+)?([01]?\d|2[0-3]):([0-5]\d)(?:\s+(\S+))?$")
+
+
+def _schedule(value: Any, now: datetime) -> tuple[str | None, str | None]:
+    """(UTC ISO time, problem)."""
+    if value in (None, ""):
+        return None, None
+    if relative := _RELATIVE.match(str(value).strip()):
+        days, hour, minute, zone = relative.groups()
+        try:
+            local = now.astimezone(ZoneInfo(zone) if zone else UTC)
+        except (ZoneInfoNotFoundError, ValueError):
+            return None, f"schedule {value!r} names an unknown timezone {zone!r}"
+        when = (local + timedelta(days=int(days or 0))).replace(
+            hour=int(hour), minute=int(minute), second=0, microsecond=0
+        )
+        if days is None and when <= local:
+            when += timedelta(days=1)
+        return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), None
+    try:
+        when = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None, (
+            f"schedule {value!r} is not an ISO 8601 time like 2026-11-03T09:00:00Z"
+            " or a time of day like 09:00 or +1d 09:00"
+        )
+    if when.tzinfo is None:
+        return None, f"schedule {value!r} needs a timezone, like 2026-11-03T09:00:00Z"
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), None
+
+
+def _field(key: str, label: str, value: Any, hint: str = "") -> dict[str, Any]:
+    return {"key": key, "label": label, "value": value, "editable": key in EDITABLE, "hint": hint}
+
+
+def preview_of(args: Mapping[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    """What the stage will publish, plus every problem that would stop it."""
+    metadata = args.get("metadata") or {}
+    edits = {k: v for k, v in (args.get("edits") or {}).items() if k in EDITABLE}
+    params = {
+        **(args.get("params") or {}),
+        **{k: metadata[k] for k in EDITABLE if metadata.get(k)},
+        **edits,
+    }
+    now = now or datetime.now(UTC)
+    title = str(params.get("title") or "").strip()
+    visibility = str(params.get("visibility") or "private")
+    made_for_kids = params.get("made_for_kids", False)
+    schedule, bad_schedule = _schedule(params.get("schedule"), now)
+    problems = [bad_schedule] if bad_schedule else []
+    if not isinstance(made_for_kids, bool):
+        problems.append(f"made_for_kids is true or false, got {made_for_kids!r}")
+    # The workflow check passes `metadata` as configured, so a title may still come from that
+    # file; at the gate the core has read it and passes its frontmatter instead.
+    if not title and not params.get("metadata"):
+        problems.append("a publish stage needs params.title")
+    elif len(title) > TITLE_MAX:
+        problems.append(f"the title is {len(title)} characters, the limit is {TITLE_MAX}")
+    if visibility not in VISIBILITIES:
+        problems.append(f"visibility is one of {', '.join(VISIBILITIES)}, got {visibility!r}")
+    if schedule and visibility != "public":
+        problems.append("a scheduled video goes public at its time; set visibility: public")
+    if schedule and schedule <= now.strftime("%Y-%m-%dT%H:%M:%SZ"):
+        problems.append(f"the schedule {schedule} has already passed")
+    hashes, keywords = hashtags(params.get("hashtags")), tags(params.get("tags"))
+    bad = [h for h in hashes if not _HASHTAG.match(h)]
+    if bad:
+        problems.append(
+            f"a hashtag is one word of letters, digits or _, not {', '.join('#' + b for b in bad)}"
+        )
+    if len(hashes) > HASHTAGS_MAX:
+        problems.append(f"{len(hashes)} hashtags, at most {HASHTAGS_MAX}")
+    if (length := tags_length(keywords)) > TAGS_ROOM:
+        problems.append(
+            f"the tags take {length} characters, at most {TAGS_ROOM} with room for the retry tag"
+        )
+    text = str(params.get("description") or "").strip()
+    size = len(full_description(text, hashes).encode())
+    if size > DESCRIPTION_BYTES:
+        problems.append(
+            f"the description with its hashtags is {size} bytes, the limit is {DESCRIPTION_BYTES}"
+        )
+    inputs = args.get("inputs") or []
+    if not inputs:
+        problems.append("a publish stage needs an input: the video to post")
+    when = f"Private until then, then {visibility}." if schedule else "Right after confirming."
+    fields = [
+        _field("title", "Title", title),
+        _field("description", "Description", text),
+        _field("hashtags", "Hashtags", hashtag_line(hashes), "The last line."),
+        _field("tags", "Tags", ", ".join(keywords)),
+        _field(
+            "comment",
+            "Comment",
+            str(params.get("comment") or "").strip(),
+            "Posted on the video after it is up.",
+        ),
+        _field("visibility", "Visibility", visibility),
+        _field("made_for_kids", "Made for kids", made_for_kids is True),
+        _field("schedule", "When", schedule, when),
+        _field("video", "Video", inputs[0] if inputs else None),
+    ]
+    return {"fields": fields, "problems": problems}
+
+
+@mcp.tool(
+    description="The fields a publish stage will post to YouTube and every problem that would"
+    " stop it, with the gate's edits applied."
+)
+def preview(
+    inputs: list[str] | None = None,
+    params: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    edits: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return preview_of({"inputs": inputs, "params": params, "metadata": metadata, "edits": edits})
+
+
+# The Data API
+
+
+def _error(response: httpx.Response, what: str) -> ToolError:
+    try:
+        detail = response.json().get("error", {})
+        message = detail.get("message") if isinstance(detail, dict) else str(detail)
+    except ValueError:
+        message = response.text[:500]
+    if response.status_code == 401:  # the core marks the account for sign-in again
+        return ToolError(f"auth_failed: {what} failed, Google refused the sign-in: {message}")
+    return ToolError(f"{what} failed ({response.status_code}): {message}")
+
+
+def _headers(env: Mapping[str, str]) -> dict[str, str]:
+    if not env.get(TOKEN):
+        raise ToolError("auth_failed: sign in to YouTube on the Connectors page")
+    return {"Authorization": f"Bearer {env[TOKEN]}"}
+
+
+def uploaded_under(http: httpx.Client, auth: dict[str, str], tag: str) -> str | None:
+    """The id of the channel's video tagged `tag`, among its latest 50 uploads."""
+    # ponytail: only the latest 50 uploads; a retry comes soon after the call it repeats.
+
+    def items(url: str, what: str, **params: str) -> list[dict[str, Any]]:
+        response = http.get(url, params=params, headers=auth)
+        if response.status_code == 404:  # a channel with no uploads has no uploads playlist
+            return []
+        if response.status_code != 200:
+            raise _error(response, what)
+        return response.json().get("items", [])
+
+    channels = items(
+        CHANNELS_URL, "finding the channel's uploads", part="contentDetails", mine="true"
+    )
+    if not channels:
+        return None
+    playlist = channels[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    latest = items(
+        PLAYLIST_ITEMS_URL,
+        "listing the channel's uploads",
+        part="contentDetails",
+        playlistId=playlist,
+        maxResults=str(MAX_IDS),
+    )
+    ids = [i["contentDetails"]["videoId"] for i in latest]
+    if not ids:
+        return None
+    for video in items(VIDEOS_URL, "reading upload tags", part="snippet", id=",".join(ids)):
+        if tag in video.get("snippet", {}).get("tags", []):
+            return str(video["id"])
+    return None
+
+
+def record_of(input_path: Path, idempotency_key: str) -> Path | None:
+    """The call's Publish Record: `youtube-<key>.json` in the stage's folder of the run its input
+    is in (`<world>/runs/<run>/<stage id>`, the one folder it may write; the key is the stage id,
+    then `.<visit>` or `.again<n>`). None outside a run."""
+    run = next((p for p in input_path.parents if p.parent.name == "runs"), None)
+    folder = run / idempotency_key.split(".")[0] if run and idempotency_key else None
+    return folder / f"youtube-{idempotency_key}.json" if folder and folder.is_dir() else None
+
+
+def _read(record: Path | None) -> dict[str, str]:
+    """What the record holds; {} when there is none. One that cannot be read is unsure."""
+    if record is None or not record.exists():
+        return {}
+    try:
+        kept = json.loads(record.read_text())
+        assert isinstance(kept, dict)
+        return kept
+    except (OSError, ValueError, AssertionError) as exc:
+        raise ToolError(f"unsure: the Publish Record {record.name} could not be read") from exc
+
+
+def _write(record: Path | None, kept: Mapping[str, str]) -> None:
+    """Written whole beside it, then renamed over it: a cut leaves the old or the new record."""
+    if record is not None:
+        part = record.with_name(record.name + ".part")
+        part.write_text(json.dumps(kept))
+        os.replace(part, record)
+
+
+def fingerprint(video: Path, record: Path | None, idempotency_key: str) -> str:
+    """The file's hash with the run and the key (the stage and its visit) it is posted under."""
+    with video.open("rb") as body:
+        digest = hashlib.file_digest(body, "sha256").hexdigest()
+    run = record.parents[1].name if record else ""
+    return f"{digest}:{run}:{idempotency_key}"
+
+
+def where(http: httpx.Client, auth: dict[str, str], session: str, size: int) -> int | str | None:
+    """Where an upload session stands: the next byte to send, the video's id once it is whole,
+    or None when the session is gone (expired). Unsure when Google cannot say."""
+    try:
+        got = http.put(session, headers={**auth, "Content-Range": f"bytes */{size}"})
+    except httpx.HTTPError as exc:
+        raise ToolError("unsure: the upload session could not be reached") from exc
+    if got.status_code in (200, 201):
+        return str(got.json()["id"])
+    if got.status_code == 308:
+        reached = got.headers.get("range", "")
+        return int(reached.rpartition("-")[2]) + 1 if reached else 0
+    if got.status_code in (404, 410):
+        return None
+    raise ToolError(f"unsure: the upload session answered {got.status_code}")
+
+
+def send(http: httpx.Client, auth: dict[str, str], session: str, video: Path, start: int) -> str:
+    """Send the file through the session from byte `start`; after a dropped connection, from the
+    byte Google confirms, in the same session. The video's id."""
+    size = video.stat().st_size
+    for _ in range(RESENDS):
+        headers = {**auth, "Content-Type": "video/*", "Content-Length": str(size - start)}
+        if start:
+            headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
+        try:
+            with video.open("rb") as body:
+                body.seek(start)
+                sent = http.put(session, content=body, headers=headers)
+        except httpx.HTTPError:
+            sent = None
+        if sent is not None and sent.status_code in (200, 201):
+            return str(sent.json()["id"])
+        if sent is not None and sent.status_code != 308:
+            raise _error(sent, "uploading the video")
+        reached = where(http, auth, session, size)
+        if reached is None:
+            raise ToolError("unsure: the upload session is gone mid-upload")
+        if isinstance(reached, str):
+            return reached
+        start = reached
+    raise ToolError(f"unsure: the upload dropped {RESENDS} times; YouTube may hold part of it")
+
+
+def upload(
+    http: httpx.Client,
+    env: Mapping[str, str],
+    video: Path,
+    title: str,
+    description: str = "",
+    visibility: str = "private",
+    schedule: str = "",
+    made_for_kids: bool = False,
+    idempotency_key: str = "",
+    keywords: list[str] | None = None,
+) -> dict[str, Any]:
+    """Upload `video`, or find or finish the one an earlier try under `idempotency_key` began,
+    from its Publish Record. Answers the publish contract's `id`, `url` and `status`, and
+    `_found` when an earlier try made the video. Fails `unsure:` when it cannot tell."""
+    if not video.is_file():
+        raise ToolError(f"the video {video} does not exist")
+    status: dict[str, Any] = {"privacyStatus": visibility, "selfDeclaredMadeForKids": made_for_kids}
+    if schedule:
+        status = {**status, "privacyStatus": "private", "publishAt": schedule}
+    auth = _headers(env)
+    record = record_of(video, idempotency_key)
+    kept = _read(record)
+    marked = fingerprint(video, record, idempotency_key)
+    if kept and kept.get("fingerprint") != marked:
+        raise ToolError("unsure: the video is not the one an earlier try began posting")
+
+    def keep(**values: str) -> None:
+        kept.update(values)
+        _write(record, kept)
+
+    def answer(video_id: str, found: bool = False) -> dict[str, Any]:
+        keep(id=video_id)
+        return {
+            "id": video_id,
+            "url": f"https://youtu.be/{video_id}",
+            "status": "scheduled" if schedule else "published",
+            "public": visibility == "public",  # a scheduled video goes public at its time
+            **({"scheduled_for": schedule} if schedule else {}),
+            **({"_found": True} if found else {}),
+        }
+
+    tag = f"swarmify-{idempotency_key}"
+    size = video.stat().st_size
+    if kept.get("id"):
+        return answer(kept["id"], True)
+    if session := kept.get("session"):
+        reached = where(http, auth, session, size)
+        if isinstance(reached, int):
+            return answer(send(http, auth, session, video, reached))
+        if reached is not None:
+            return answer(reached, True)
+        # The session expired. Only the tag says whether it made the video, and a video's
+        # listing may lag, so not finding it is no reason to upload again.
+        try:
+            done = uploaded_under(http, auth, tag)
+        except ToolError as exc:
+            raise ToolError(f"unsure: the upload session is gone and {exc}") from exc
+        if done is None:
+            raise ToolError(
+                "unsure: the upload session is gone and the video is not among the channel's"
+                " latest uploads"
+            )
+        return answer(done, True)
+    keep(fingerprint=marked)  # the intent, before the first byte
+    snippet: dict[str, Any] = {"title": title, "description": description}
+    keywords = list(keywords or [])
+    if idempotency_key:
+        if done := uploaded_under(http, auth, tag):
+            return answer(done, True)
+        keywords.append(tag)  # beside the real tags, never instead
+    if keywords:
+        snippet["tags"] = keywords
+    started = http.post(
+        UPLOAD_URL,
+        params={"uploadType": "resumable", "part": "snippet,status"},
+        headers={**auth, "X-Upload-Content-Type": "video/*", "X-Upload-Content-Length": str(size)},
+        json={"snippet": snippet, "status": status},
+    )
+    if started.status_code != 200 or "location" not in started.headers:
+        raise _error(started, "starting the YouTube upload")
+    keep(session=started.headers["location"])
+    return answer(send(http, auth, started.headers["location"], video, 0))
+
+
+def comment_on(
+    http: httpx.Client, env: Mapping[str, str], video_id: str, text: str, retried: bool
+) -> str:
+    """Post `text` as a comment on the video, its id. A retried publish first looks for the
+    same text among the video's comments, so it is never posted twice."""
+    try:
+        return _comment_on(http, _headers(env), video_id, text, retried)
+    except httpx.HTTPError as exc:
+        raise ToolError("posting the comment failed: YouTube could not be reached") from exc
+
+
+def _comment_on(
+    http: httpx.Client, auth: dict[str, str], video_id: str, text: str, retried: bool
+) -> str:
+    if retried:
+        # ponytail: the newest 100 comments; a retry comes soon after the call it repeats.
+        listed = http.get(
+            COMMENT_THREADS_URL,
+            params={"part": "snippet", "videoId": video_id, "maxResults": "100"},
+            headers=auth,
+        )
+        if listed.status_code == 200:
+            for thread in listed.json().get("items", []):
+                top = thread.get("snippet", {}).get("topLevelComment", {})
+                if top.get("snippet", {}).get("textOriginal") == text:
+                    return str(thread.get("id") or top.get("id"))
+        elif listed.status_code != 404:
+            raise _comment_error(listed)
+    top = {"snippet": {"textOriginal": text}}
+    sent = http.post(
+        COMMENT_THREADS_URL,
+        params={"part": "snippet"},
+        headers=auth,
+        json={"snippet": {"videoId": video_id, "topLevelComment": top}},
+    )
+    if sent.status_code != 200:
+        raise _comment_error(sent)
+    answer = sent.json()
+    return str(answer.get("snippet", {}).get("topLevelComment", {}).get("id") or answer["id"])
+
+
+def _comment_error(response: httpx.Response) -> ToolError:
+    why = _reasons(response) if response.status_code == 403 else ""
+    if "insufficientPermissions" in why or "SCOPE_INSUFFICIENT" in why:
+        return ToolError(COMMENT_SCOPE_FAILED)
+    return _error(response, "posting the comment")
+
+
+def publish_fields(
+    http: httpx.Client,
+    env: Mapping[str, str],
+    fields: Mapping[str, Any],
+    input_path: str,
+    idempotency_key: str = "",
+) -> dict[str, Any]:
+    """Post exactly the confirmed `fields`: the hashtags as the description's last line, the
+    tags beside the retry tag. Then the `comment`, when there is one: its id, or why it failed,
+    beside the post, which stands either way."""
+    out = upload(
+        http,
+        env,
+        Path(input_path),
+        str(fields["title"]),
+        full_description(str(fields.get("description") or ""), hashtags(fields.get("hashtags"))),
+        str(fields.get("visibility") or "private"),
+        str(fields.get("schedule") or ""),
+        fields.get("made_for_kids") is True,
+        idempotency_key,
+        tags(fields.get("tags")),
+    )
+    found = out.pop("_found", False)  # an earlier try uploaded it, and may have commented
+    if found:
+        out["already_posted"] = True
+    text = str(fields.get("comment") or "").strip()
+    if not text:
+        return out
+    record = record_of(Path(input_path), idempotency_key)
+    kept = _read(record)
+    comments, failed = {}, {}
+    try:
+        comments["youtube"] = kept.get("comment") or comment_on(http, env, out["id"], text, found)
+        _write(record, {**kept, "comment": comments["youtube"]})
+    except ToolError as exc:
+        failed["youtube"] = str(exc)
+    return {**out, "comments": comments, "comment_failed": failed}
+
+
+@mcp.tool(
+    description="Upload the video at `input_path` to YouTube with the `fields` a gate confirmed."
+    " With a schedule it stays private until then and goes public at that time."
+)
+def publish(fields: dict[str, Any], input_path: str, idempotency_key: str = "") -> dict[str, Any]:
+    with httpx.Client(timeout=httpx.Timeout(60.0, write=None)) as http:
+        return publish_fields(http, os.environ, fields, input_path, idempotency_key)
+
+
+def videos_of(
+    http: httpx.Client, env: Mapping[str, str], ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Each video's `views` and `privacy` (public, unlisted or private) by id; a video YouTube
+    no longer has is left out."""
+    ids = list(dict.fromkeys(i for i in ids if i))
+    if not ids:
+        return {}
+    auth, found = _headers(env), {}
+    for start in range(0, len(ids), MAX_IDS):
+        response = http.get(
+            VIDEOS_URL,
+            params={"part": "statistics,status", "id": ",".join(ids[start : start + MAX_IDS])},
+            headers=auth,
+        )
+        if response.status_code != 200:
+            raise _error(response, "reading YouTube view counts")
+        for item in response.json().get("items", []):
+            found[item["id"]] = {
+                "views": int(item.get("statistics", {}).get("viewCount", 0)),
+                "privacy": str(item.get("status", {}).get("privacyStatus", "")),
+            }
+    return found
+
+
+def _reasons(response: httpx.Response) -> str:
+    """Google's error reasons and message, as one string to search."""
+    try:
+        error = response.json().get("error", {})
+    except ValueError:
+        return response.text[:500]
+    if not isinstance(error, dict):
+        return str(error)
+    parts = [str(error.get("message", ""))]
+    parts += [str(e.get("reason", "")) for e in error.get("errors", []) if isinstance(e, dict)]
+    parts += [str(d.get("reason", "")) for d in error.get("details", []) if isinstance(d, dict)]
+    return " ".join(parts)
+
+
+def retention(
+    http: httpx.Client, env: Mapping[str, str], ids: list[str], now: datetime
+) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Each video's retention from YouTube Analytics by id (RETENTION's names), and a notice
+    when the account may not read it at all: then the rest of the pass is skipped and the views
+    still count. A video with no data yet, or one the channel does not own, is left out."""
+    # ponytail: one basic report per video; batch by the video dimension if posts reach hundreds.
+    auth, found = _headers(env), {}
+    metrics = ["views", *RETENTION]
+    for video in dict.fromkeys(ids):
+        while True:
+            response = http.get(
+                ANALYTICS_URL,
+                params={
+                    "ids": "channel==MINE",
+                    "startDate": ANALYTICS_START,
+                    "endDate": now.astimezone(UTC).date().isoformat(),
+                    "metrics": ",".join(metrics),
+                    "filters": f"video=={video}",
+                },
+                headers=auth,
+            )
+            if response.status_code == 400 and "engagedViews" in metrics:
+                metrics.remove("engagedViews")  # not offered to every channel: ask without it
+                continue
+            break
+        if response.status_code == 401:
+            raise _error(response, "reading YouTube retention")
+        why = _reasons(response) if response.status_code == 403 else ""
+        if (
+            "SCOPE_INSUFFICIENT" in why
+            or "insufficientPermissions" in why
+            or "authentication scopes" in why
+        ):
+            return found, SCOPE_NOTICE
+        if "accessNotConfigured" in why or "SERVICE_DISABLED" in why:
+            return found, API_NOTICE
+        if response.status_code != 200:
+            continue  # not the channel's video, or Google failing: the next pass tries again
+        answer = response.json()
+        names = [h.get("name") for h in answer.get("columnHeaders", [])]
+        for row in answer.get("rows") or []:
+            got = dict(zip(names, row, strict=False))
+            found[video] = {name: got[m] for m, name in RETENTION.items() if got.get(m) is not None}
+        if video in found and (curve := retention_curve(http, auth, video, now)):
+            found[video][CURVE] = curve
+    return found, None
+
+
+def retention_curve(
+    http: httpx.Client, auth: dict[str, str], video: str, now: datetime
+) -> list[list[float]]:
+    """The video's audience retention report: [elapsed video time ratio, audience watch ratio]
+    points in order; none when YouTube answers anything else (the next pass tries again)."""
+    response = http.get(
+        ANALYTICS_URL,
+        params={
+            "ids": "channel==MINE",
+            "startDate": ANALYTICS_START,
+            "endDate": now.astimezone(UTC).date().isoformat(),
+            "dimensions": "elapsedVideoTimeRatio",
+            "metrics": "audienceWatchRatio",
+            "filters": f"video=={video}",
+            "sort": "elapsedVideoTimeRatio",
+        },
+        headers=auth,
+    )
+    if response.status_code != 200:
+        return []
+    answer = response.json()
+    names = [h.get("name") for h in answer.get("columnHeaders", [])]
+    rows = (dict(zip(names, row, strict=False)) for row in answer.get("rows") or [])
+    points = ((got.get("elapsedVideoTimeRatio"), got.get("audienceWatchRatio")) for got in rows)
+    return [[float(x), float(y)] for x, y in points if x is not None and y is not None]
+
+
+_LINK = re.compile(
+    r"^https?://(?:www\.|m\.)?(?:youtu\.be/|youtube\.com/(?:watch\?v=|shorts/))([\w-]{6,20})"
+)
+
+
+def claimed(posts: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """The YouTube videos of each post that has any, by post id: every YouTube link, whichever
+    connector posted it, plus the id of this connector's own post that has no link yet."""
+    out = {}
+    for post in posts:
+        links = post.get("links")
+        urls = links.values() if isinstance(links, dict) else []
+        videos = [m[1] for url in urls if (m := _LINK.match(str(url)))]
+        if post.get("connector") == "youtube" and post.get("id"):
+            videos.append(str(post["id"]))
+        if videos and post.get("id"):
+            out[str(post["id"])] = list(dict.fromkeys(videos))
+    return out
+
+
+def outcomes_of(
+    http: httpx.Client,
+    env: Mapping[str, str],
+    posts: list[dict[str, Any]],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """The views, visibility (`visible` when public, and the privacy status as
+    `visibility_label`) and retention of every post that is a YouTube video, by post id; a
+    post whose videos YouTube no longer has is left out. Several videos of one post add their
+    counts and average their averages, and keep the first one's retention curve (`curves`).
+    NOTICE says why retention could not be read."""
+    videos = claimed(posts)
+    found = videos_of(http, env, [v for vs in videos.values() for v in vs])
+    kept = {post: [v for v in vs if v in found] for post, vs in videos.items()}
+    kept = {post: vs for post, vs in kept.items() if vs}
+    held, notice = retention(
+        http, env, [v for vs in kept.values() for v in vs], now or datetime.now(UTC)
+    )
+    out: dict[str, Any] = {}
+    for post, vs in kept.items():
+        answer: dict[str, Any] = {
+            "views": sum(found[v]["views"] for v in vs),
+            # the generic contract: core decides on `visible`, YouTube's word is the label
+            "visible": found[vs[0]]["privacy"] == "public",
+            "visibility_label": found[vs[0]]["privacy"],
+        }
+        for name in RETENTION.values():
+            values = [held[v][name] for v in vs if name in held.get(v, {})]
+            if values:
+                total = sum(values)
+                answer[name] = total if name in COUNTS else round(total / len(values), 2)
+        # curves never add up: a post with several videos keeps its first video's
+        curve = next((held[v][CURVE] for v in vs if CURVE in held.get(v, {})), None)
+        if curve:
+            answer["curves"] = {CURVE: curve}
+        out[post] = answer
+    if notice:
+        out[NOTICE] = notice
+    return out
+
+
+@mcp.tool(
+    description="The Outcomes Capability: views, visibility, retention and the retention curve of"
+    " every post that is a YouTube video, whoever posted it, by post id."
+)
+def outcomes(posts: list[dict[str, Any]]) -> dict[str, Any]:
+    with httpx.Client(timeout=60.0) as http:
+        return outcomes_of(http, os.environ, posts)
+
+
+def channel_name(http: httpx.Client, env: Mapping[str, str]) -> str:
+    """The title of the channel the signed-in account posts to."""
+    response = http.get(
+        CHANNELS_URL, params={"part": "snippet", "mine": "true"}, headers=_headers(env)
+    )
+    if response.status_code != 200:
+        raise _error(response, "reading the YouTube channel")
+    items = response.json().get("items", [])
+    if not items:
+        raise ToolError("this Google account has no YouTube channel")
+    return str(items[0]["snippet"]["title"])
+
+
+@mcp.tool(description="The channel the signed-in account posts to.")
+def channel() -> dict[str, Any]:
+    with httpx.Client(timeout=30.0) as http:
+        return {"channel": channel_name(http, os.environ)}
+
+
+if __name__ == "__main__":  # pragma: no cover - started as a subprocess
+    mcp.run("stdio")

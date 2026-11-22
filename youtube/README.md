@@ -1,0 +1,163 @@
+# youtube
+
+The YouTube connector: it uploads a video to a YouTube channel through the YouTube Data API, now
+or scheduled, and reads view counts back. It is our own small MCP server (ADR 0015) and a
+Connector Package (ADR 0019), one of Swarmify's default packages: on startup Swarmify installs it
+from this folder into `<data dir>/packages/youtube/<version>/`, where its install step (`uv sync`)
+puts httpx and the MCP SDK beside it, and enables it for every world that has not decided
+otherwise, so workflows call `youtube` exactly as before. Everything Swarmify knows of it is
+`swarmify-connector.toml`.
+
+## Setup
+
+One field, **YouTube account** (`youtube`), a Google sign-in (Swarmify's README, OAuth sign-in): Swarmify
+keeps the token set and starts the connector with a current access token as
+`YOUTUBE_ACCESS_TOKEN`. It asks for the `youtube.upload`, `youtube.readonly`,
+`yt-analytics.readonly` and `youtube.force-ssl` (to post the `comment`) scopes, offline access and the consent screen every time, so Google always
+issues a refresh token.
+
+Once: create a Google Cloud project, enable the YouTube Data API v3 and the YouTube Analytics
+API, configure the consent screen (while it is in Testing, add yourself as a test user) and create an OAuth client of type **Web
+application** whose authorized redirect URI is the one the Connectors page shows,
+`<the address you open Swarmify at>/api/setup/oauth/callback`. On the Connectors page save its client ID and secret as **YouTube account client ID** and
+**client secret**, then **Sign in** with the Google account that owns the channel. The account is
+shared by every world.
+
+Upgrading from V1, where the terminal `authorize` command printed `YOUTUBE_REFRESH_TOKEN` for
+`.env`: the start that first installs the package moves `YOUTUBE_CLIENT_ID` and
+`YOUTUBE_CLIENT_SECRET` into the client ID and secret, and `YOUTUBE_REFRESH_TOKEN` into the
+account's token set, refreshed on first use, so no new sign-in is needed. The `authorize` command
+is gone. V1's client is a Desktop app, which Google lets redirect only to the machine itself: to
+sign in again with it, use the loopback fallback (Swarmify's README, OAuth sign-in), or create a
+Web application client as above. View counts need the `youtube.readonly` scope, which V1 did not
+ask for: a V1 refresh token posts but reads no Outcomes until you sign in again.
+
+Google and a `*.ts.net` address: Google accepts a redirect URI for a "Web application" client
+when it uses https, its host is not a raw IP, and its top-level domain is on the public suffix
+list ([Google's redirect URI rules](https://developers.google.com/identity/protocols/oauth2/web-server#uri-validation)).
+`https://<host>.<tailnet>.ts.net/api/setup/oauth/callback` meets all three: `.net` is a public
+suffix, and `ts.net` itself is on the [list](https://publicsuffix.org/list/public_suffix_list.dat)
+(private section, submitted by Tailscale). Google never calls the redirect URI itself, the browser
+follows it, so Tailscale Serve is enough. The Manifest asks Google for a refresh token with
+`authorize_params = { access_type = "offline", prompt = "consent" }`.
+
+A refresh Google refuses (`invalid_grant`: the access revoked or expired, or `invalid_client`:
+the app's secret changed) or a call Google answers 401 marks the account **Needs sign-in**, and
+the Needs-you page says so; sign in again from the Connectors page.
+
+Google expires the refresh tokens of an app whose consent screen is in **Testing** after 7 days.
+To stop that, publish the app: Google Cloud console, Google Auth Platform (APIs & Services, OAuth
+consent screen), Audience, **Publish app**, then sign in again. A published app that asks for
+these scopes and is not verified shows an "unverified app" warning at sign-in (Advanced, then go
+to the app) and is capped at 100 users, which a self-hosted Swarmify never nears; its refresh
+tokens do not expire on a timer.
+
+The `comment` needs the `youtube.force-ssl` scope, which before 1.4.0 was not asked for. An
+account signed in earlier still posts; its comment is recorded as failed with "sign in to YouTube
+again", and one sign-in from the Connectors page fixes it.
+
+Retention (YouTube Analytics) needs the `yt-analytics.readonly` scope, which before 1.2.0 was not
+asked for. An account signed in earlier still posts and reads views; the Needs-you page says once
+to sign in again to get retention, and until then only views are recorded.
+
+## The stage
+
+```yaml
+  - gate: post it
+    kind: confirm
+    ask: Post this short?
+  - connector: publish
+    calls: youtube          # or upload_post, whose README adds user and platforms
+    input: short.mp4        # the newest file of this name any earlier stage left in the run
+    params:
+      title: Five hooks that work      # required, at most 100 characters
+      description: optional
+      metadata: script.md              # optional: take title, description, hashtags and tags from its frontmatter
+      hashtags: [owls, nature]         # optional, at most 5, one word each, `#` optional
+      tags: [owls, owl facts]          # optional, YouTube's keywords, 450 characters in all
+      visibility: public               # say it: public, unlisted or private (default private)
+      schedule: "+1d 09:00"            # optional, see below; needs public
+      made_for_kids: false             # YouTube's COPPA declaration (default false)
+      comment: Name it. Wrong answers only   # optional: commented on the video once it is up
+```
+
+The `title` and `description` in the `metadata` file's frontmatter (and `hashtags` and `tags`)
+win over the params, which stay the fallback, so a daily workflow posts each video under its own
+script's title. `schedule` is ISO 8601 with a timezone, or relative: `09:00` (the next 09:00),
+`+1d 09:00` (tomorrow at 09:00), either with an IANA timezone after it
+(`+1d 09:00 Europe/London`, UTC by default). A relative schedule is resolved when the gate is
+shown, so a scheduled workflow posts every run, and a gate answered after the time it showed
+passed shows the new one again. `made_for_kids` goes to YouTube as `selfDeclaredMadeForKids`;
+content made for children must set it. `hashtags` go out as the description's last line
+(`#owls #nature`), where YouTube shows up to three above the title; a hashtag with a space or
+punctuation, more than five, or a description over YouTube's 5,000 bytes with them is a problem
+the gate shows. `tags` go to YouTube's tags (`snippet.tags`) beside the retry tag, which is why
+they stop at 450 of YouTube's 500 characters. Both are editable at the gate. Writing them is the
+workflow's job, for example the script stage's frontmatter; Swarmify never makes them up.
+
+## What it answers
+
+- `preview` shows Title, Description, Hashtags, Tags, Comment, Visibility, Made for kids, When and Video,
+  and every problem that would stop the post: a missing or over-100-character title, an unknown
+  visibility, a schedule that is unreadable, has no timezone, has passed or is not public, more
+  than five hashtags or one that is not a single word, tags over 450 characters, a description
+  over 5,000 bytes with its hashtags, no input. Params and the `metadata` file work as The stage
+  says. A relative schedule (`09:00`, `+1d 09:00 Europe/London`) is resolved
+  when the preview is made. It needs no account, so a saved workflow is checked before sign-in.
+- `publish` posts the confirmed fields: the hashtags as the description's last line, the tags as
+  YouTube's tags, `made_for_kids` as `selfDeclaredMadeForKids`. It uploads with `videos.insert`
+  (one resumable session, one PUT of the file); with a schedule the video goes up private with
+  `publishAt` and YouTube makes it public then. It answers `id`, `url` (`https://youtu.be/<id>`),
+  `status` (`published` or `scheduled`), `public` (true for `visibility: public`, scheduled or
+  not) and, when scheduled, `scheduled_for` (the `publishAt` time).
+- With a `comment` (a param, the metadata file's `comment`, or the gate's edit), `publish` then
+  posts it on the video (`commentThreads.insert`, 50 quota units) and answers `comments`
+  (`{"youtube": <comment id>}`) or `comment_failed` (`{"youtube": <why>}`); a failed comment
+  never fails the post. A retry that finds its video already up first lists the video's comments
+  and answers the one with the same text instead of posting it again. Pinning it stays manual:
+  YouTube does not pin by API.
+- `outcomes` (the Outcomes Capability, ranked by `views`) answers the view counts and
+  visibility (`visible`, true when the privacy status is public, and that status, public,
+  unlisted or private, as `visibility_label`) of every post that is a YouTube video: its own posts, and any
+  post with a YouTube link, such as one Upload-Post made. Up to 50 videos per `videos.list`
+  call. From YouTube Analytics it adds, for the channel's own videos,
+  `youtube_avg_viewed_percent` (averageViewPercentage), `youtube_avg_view_seconds`
+  (averageViewDuration) and `youtube_engaged_views` (engagedViews, when the API offers it), one
+  report per video. Since 1.5.0 it also answers the audience retention report as the curve
+  `youtube_retention` under `curves`: `[elapsed video time ratio, audience watch ratio]` points
+  (elapsedVideoTimeRatio, audienceWatchRatio), one more report per video that has data. Upkeep
+  stores the latest curve as is beside the numbers, and `publish_outcomes` returns it; a post with
+  several videos keeps its first video's curve. When Analytics refuses the account (an old sign-in
+  without the scope, or the API not enabled) it answers views alone with a `_notice` saying how to
+  fix it.
+
+A stage that leaves out `visibility` uploads private, and the workflow editor warns about it. A
+public or unlisted post needs a gate right before its stage; a private one does not. Upkeep
+records each video's visibility beside its Outcome, and a post still private or unlisted a day
+after it went out, when it went out public (or its stage said nothing and its run is done), is
+listed on the Needs-you page. Before 1.3.0 the answer named YouTube's `privacy` itself; records
+from then are still read.
+- `channel` answers the title of the channel the account posts to.
+
+A publish cut off mid-flight (a deploy restarting Swarmify) resumes safely, so Swarmify calls it
+again with the same idempotency key instead of asking. Each call keeps a Publish Record,
+`youtube-<key>.json`, in the stage's folder of the run: the file's fingerprint before the first
+byte, then the resumable upload session, the video's id and the comment's. Called again, it
+answers a recorded video as is, asks a recorded session where it stands and finishes the upload
+in that same session (never a second video), and answers `already_posted` when an earlier try
+made the video. When it cannot tell (the session expired and the tag below does not find the
+video, Google does not answer, the record is unreadable or the file changed) it answers
+`unsure:` and Swarmify asks "Did this post go out?" instead of uploading blind.
+
+Each upload is also tagged `swarmify-<idempotency key>` beside its own tags, and before a new
+upload the connector looks for that tag among the channel's latest 50 uploads (3 quota units),
+an extra check that answers the video an earlier attempt already put up. By default uploads have their own quota of 100 a day; the retry check and the other reads
+share 10,000 units a day
+([quota costs](https://developers.google.com/youtube/v3/determine_quota_cost)).
+
+## Tests
+
+`test_youtube.py` covers the preview, the Data API calls against a fake Google (httpx's
+MockTransport), and the package installed through the real install path from a V1 `.env`,
+signed in by refreshing V1's token against a fake provider and answering `preview` and `publish`
+over stdio MCP. Run it with `uv run pytest connectors/youtube` from the repository root.

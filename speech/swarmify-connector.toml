@@ -1,0 +1,169 @@
+# The speech connector (README.md beside this file). A default package: Swarmify installs it from
+# this folder and enables it for every world that has not decided otherwise.
+name = "speech"
+version = "1.3.1"
+label = "Speech"
+about = "Voices a script, one take per scene, with word timings and cut points. Needs a speech engine (its README, Speech engines)."
+kind = "stage"
+icon = "icon.svg"
+stage_types = ["connector"]
+
+planner_notes = """The script is a fenced JSON block {"scenes": [{"id", "lines": [{"text", "pause_after"}]}]}, each line an object, pause_after optional seconds; else paragraphs become scenes and sentences lines. In a line's text, (pause), (beat), (long pause) or (pause 1.5s) is silence, and delivery directions (whispers), (laughs), (chuckles), (sighs), (gasps), (excited), (dramatically), (sadly), (angrily), (sarcastically), (surprised), (scared), or tags as [clear throat], [cough], [groan], [sniff], [shush], [narration], [advertisement], are voiced by engines that support them and never read aloud. It voices one take per scene into narration/ beside timings.json, which holds each line's words (Remotion Caption shape) and cut points; give a later build stage both the script and timings.json as inputs. Left without params.voice, the script's own voice speaks, which its judge picks when the world has voices. With params.effect it voices a short non-word utterance instead (the input's text, a typed script's lines, or effect.text, as "Uhhhhhhh" or "Mmmmh"; a script of only (pause) voices no take and asks no engine), processed as declared: pitch in semitones, speed the playback rate (tape-style from pitch when not given), room echo 0 to 1, a hard cut in seconds, min_length seconds a take must last; takes is a count or a list of each take's own settings. The output is a JSON listing each take's file, duration and settings, the takes beside it as <output stem>-<n>.wav."""
+input_types = ["script"]
+world_types = "speech_types"
+
+runtime = "uv"
+install = ["uv", "sync", "--frozen", "--no-dev"]
+command = [".venv/bin/python", "speech.py"]
+
+# Each world's voices: the Assets page shows the folder, the connector gives it meaning (README, Voices).
+[[owned_folders]]
+folder = "voices"
+label = "Voices"
+about = "Each clip is a voice your speech steps can clone, named by its file: 5 to 10 s of one speaker's clear speech, no music. voices.json, when there, describes them. Eight starter voices: the speech package's README, Voices."
+accept = ["audio/wav"]
+confirm = "This is my voice, or I have the speaker's permission"
+
+[params]
+type = "object"
+additionalProperties = false
+[params.properties.voice]
+type = "string"
+description = "fixes the voice for every script: a name from the world's voice catalog, else the engine's own, as af_heart; it wins over the script's voice"
+[params.properties.engines]
+type = "array"
+items = { type = "string" }
+description = "SPEECH_ENDPOINTS entries, in the order to try them"
+[params.properties.seed]
+type = "integer"
+description = "for repeatable takes"
+[params.properties.effect]
+type = "object"
+additionalProperties = false
+description = "the vocal-effect mode: voices a short non-word utterance (the input's text or its script's lines, else effect.text) and processes each take as declared; the output is a JSON of the takes, written beside it"
+[params.properties.effect.properties.text]
+type = "string"
+minLength = 1
+maxLength = 80
+description = "the utterance, as Uhhhhhhh, Mmmmh or Ooof; else the input's text"
+[params.properties.effect.properties.pitch]
+type = "number"
+minimum = -12
+maximum = 12
+description = "semitones, -3 a little lower"
+[params.properties.effect.properties.speed]
+type = "number"
+minimum = 0.5
+maximum = 2
+description = "the playback rate, 0.84 about 19% slower; tape-style from pitch, 2^(pitch/12), when not given"
+[params.properties.effect.properties.room]
+type = "number"
+minimum = 0
+maximum = 1
+description = "the level of a small room's two echoes (45 and 80 ms); 0 is dry"
+[params.properties.effect.properties.cut]
+type = "number"
+minimum = 0.1
+maximum = 10
+description = "seconds at which the clip ends hard, on a 20 ms fade"
+[params.properties.effect.properties.min_length]
+type = "number"
+minimum = 0.1
+maximum = 10
+description = "seconds a take must last: a shorter one is voiced again with the next seed, up to 4 tries"
+[params.properties.effect.properties.seed]
+type = "integer"
+description = "the first take's seed, numbered on for the others"
+[params.properties.effect.properties.takes]
+description = "how many takes (1 to 8), or a list of each take's own settings over these"
+oneOf = [
+  { type = "integer", minimum = 1, maximum = 8 },
+  { type = "array", minItems = 1, maxItems = 8, items = { type = "object" } },
+]
+
+[[inputs]]
+description = "the script: fenced JSON scenes and lines, else paragraphs and sentences; directions in brackets, as (pause), (beat), (whispers), (laughs) or [sigh]"
+media_type = "text/markdown"
+
+[[outputs]]
+description = "timings.json, with the takes in narration/ beside it"
+media_type = "application/json"
+
+[[outputs]]
+description = "the takes, one per scene, in narration/"
+media_type = "audio/wav"
+
+# The script a stage writes for it (issue 133); `speech_types` adds a world's voices.
+[types.script]
+type = "object"
+description = "A voice-over script: scenes, each voiced as one take, of spoken lines."
+required = ["scenes"]
+
+[types.script.properties.description]
+type = "string"
+description = "One or two sentences describing the piece, used where it is published"
+
+[types.script.properties.scenes]
+type = "array"
+minItems = 1
+
+[types.script.properties.scenes.items]
+type = "object"
+additionalProperties = true
+description = "Other keys, such as a visual note for a later build stage, pass through untouched"
+required = ["id", "lines"]
+
+[types.script.properties.scenes.items.properties.id]
+type = "string"
+pattern = "^[A-Za-z0-9_-]{1,60}$"
+description = "Unique; letters, digits, _ or -, as s01"
+
+[types.script.properties.scenes.items.properties.lines]
+type = "array"
+minItems = 1
+
+[types.script.properties.scenes.items.properties.lines.items]
+type = "object"
+required = ["text", "pause_after"]
+
+[types.script.properties.scenes.items.properties.lines.items.properties.text]
+type = "string"
+minLength = 1
+description = "What is said. Directions in brackets: pauses (pause), (beat), (long pause), (pause 1.5s); delivery as [whispering] [happy] [angry] [sarcastic] [surprised] [fear] [crying] [dramatic] [narration] [advertisement] [laugh] [chuckle] [sigh] [gasp] [groan] [cough] [sniff] [shush] [clear throat], or screenplay words such as (whispers) or (laughs)"
+
+[types.script.properties.scenes.items.properties.lines.items.properties.pause_after]
+type = "number"
+minimum = 0
+description = "Seconds of silence after the line, 0.3 usually"
+
+[setup]
+help_url = "https://github.com/wagleanuj/swarmify/tree/main/connectors/speech#setup"
+
+[[config]]
+key = "speech_endpoints"
+label = "Speech engines"
+type = "string"
+default = "http://localhost:8881,http://localhost:8880"
+env = "SPEECH_ENDPOINTS"
+help = "The engines' URLs, comma separated, in the order to try them. In Docker, beside this package's compose file: http://chatterbox:8881,http://kokoro:8880 (or chatterbox-gpu)."
+
+[[config]]
+key = "gpu_engines"
+label = "Engines on the GPU"
+type = "string"
+default = "http://localhost:8881,http://chatterbox:8881,http://chatterbox-gpu:8881"
+env = "SPEECH_GPU_ENGINES"
+help = "Of the engines above, those that run on this host's GPU, comma separated: each request to one waits for the GPU while a render holds it. Empty for none."
+
+# Each URL in the Setting is an engine; the Connectors page shows whether each answers /health.
+[[services]]
+name = "engines"
+url = "speech_endpoints"
+health = "/health"
+
+# Its sandbox (ADR 0021): the engines' URLs its Setting holds, and nothing else; its voices are
+# its Owned Folder, the script and takes the run's. The gpu Resource's Slots (ADR 0030), held
+# around each request to an engine on the GPU.
+[permissions]
+services = ["engines"]
+resources = ["gpu"]

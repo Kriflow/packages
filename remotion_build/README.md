@@ -1,0 +1,77 @@
+# remotion_build
+
+The Remotion build connector: one sandboxed coding session writes a Remotion project for the
+run's script, then the remotion_render package's own render, not the agent, turns it into the
+stage's video. It is a Connector Package (ADR 0019) and one of Swarmify's default packages, so
+workflows call `remotion_build` exactly as before. Everything Swarmify knows of it is
+`swarmify-connector.toml`: it requests a Build Session (see Build Sessions in Swarmify's README,
+which covers the session, its sandbox, its budget and revisions after a send-back) and has no
+server of its own.
+
+What it gives the session, all files beside this one:
+
+- `system.md`, the builder's system prompt: how to work in the seeded project, assets and fonts
+  under `public/` because the render has no network, and how to keep a 3D scene
+  (`@remotion/three`) deterministic.
+- `brief.md`, the task: build composition `$composition` from the script at `$input`.
+- `voice_first.md`, added when one of the stage's inputs is a `timings.json` (below).
+- `starter/`, the minimal project a build starts from when it names no `base`: `src/index.ts`
+  registering a Root with composition `Main`, and `@remotion/captions` among its dependencies.
+- The network the session may reach (`permissions.network`): the npm registry and Google Fonts.
+
+The builder installs with pnpm (npm only if pnpm cannot run), `pnpm import` first so a project's
+package-lock.json keeps its versions. Every session shares one store, `<data dir>/pnpm-store`,
+with pnpm's global virtual store: a build's node_modules holds links into it, not copies (the
+sandbox mounts the build folder and the store apart, so hardlinks could not cross). The render
+reads the store (remotion_render's `permissions.folders`). A library's types there cannot see the
+project's `@types/react`, so the starter's tsconfig.json maps `react` to it in `paths`.
+
+The render is remotion_render's `remotion_render` tool, called on the build folder with the
+composition (`[build_session]` `connector`, `tool` and `arguments`), so a world enables both
+(both are defaults). Sharing that code path, rather than a copy of it, keeps one render and one
+Chrome Headless Shell (800 MB) for both.
+
+## The stage
+
+```yaml
+  - connector: video
+    calls: remotion_build
+    input: script.md            # the script artifact an earlier stage produced
+    # or inputs: [script.md, timings.json], the script first, the rest named to the builder
+    output: video.mp4           # the default
+    params:                     # all optional
+      base: shorts              # one of the world's Templates to start from (a name)
+      composition: Main         # the default
+      brief: Bold captions, 20 seconds, a cold open.
+      model: claude-sonnet-5-5  # over the world's worker model (the Cast), else the default
+      max_turns: 80             # the default
+      minutes: 30               # optional: a time limit in minutes; none by default
+```
+
+`base` copies a Template by name from the world's `assets/remotion_templates/` folder (ADR 0028, on the
+world's Assets page) instead of the starter, without its `node_modules`; the workflow check
+reports one the world does not have. The stage's call records the Template's name and
+fingerprint, the run page shows the name, and when the Template has a `TEMPLATE.md` the brief
+tells the builder to read it first.
+
+When one of `inputs` is a `timings.json` (the speech package's), the brief turns voice
+first, as the spike on branch `spike/voice-first-video` proved: copy the timings and their takes
+into `public/`, take the composition's length from the voice timeline, play each line as a trimmed
+`<Audio>` in a `<Sequence>` spaced by its pause (scaled for the style, none after a
+`joined_next` line), page karaoke captions per line with `createTikTokStyleCaptions` and
+`white-space: pre`, and duck a music bed from the world's assets under speech. `voice_first.md`
+carries a sample composition doing all of it, which a test type-checks in the starter.
+
+The render executes the agent's code (its `remotion.config.ts`, its `node_modules`), in the
+remotion_render package's connector sandbox (ADR 0021, Swarmify's README): no network beyond its
+own loopback (fonts and images must be files in `public/`, which the builder is told), nothing of
+the data directory readable but that package, the world's Templates and the run's folders, and
+nothing writable but the stage's folder. It never installs: a build that left no `node_modules` fails.
+Chrome Headless Shell is the one the remotion_render package's install step downloaded beside it
+(else one on `PATH`).
+
+Tests drive the builder with the scripted CLI and the render with a fake `npx` inside the real
+connector sandbox. One real build, on your subscription and the real Remotion CLI, runs when you opt in:
+`SWARMIFY_REAL_BUILD=1 uv run pytest apps/api/tests/test_build_http.py -k real -s` (about a
+minute on a Mac, most of it the first pnpm install and the Chrome download).
+

@@ -444,7 +444,7 @@ def report(
                 return httpx.Response(400, json={"error": {"message": "Unknown video"}})
             # columns in the other order: the points are read by name, never by place
             columns = [{"name": "audienceWatchRatio"}, {"name": "elapsedVideoTimeRatio"}]
-            points = [[y, x] for x, y in curves[video]]
+            points = [[y, x] for x, y in (curves or {})[video]]
             return httpx.Response(200, json={"columnHeaders": columns, "rows": points})
         if "engagedViews" in asked and "engagedViews" not in metrics:
             return httpx.Response(400, json={"error": {"message": "Unknown identifier"}})

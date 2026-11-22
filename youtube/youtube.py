@@ -571,8 +571,8 @@ def retention_curve(
     answer = response.json()
     names = [h.get("name") for h in answer.get("columnHeaders", [])]
     rows = (dict(zip(names, row, strict=False)) for row in answer.get("rows") or [])
-    points = ([got.get("elapsedVideoTimeRatio"), got.get("audienceWatchRatio")] for got in rows)
-    return [p for p in points if None not in p]
+    points = ((got.get("elapsedVideoTimeRatio"), got.get("audienceWatchRatio")) for got in rows)
+    return [[float(x), float(y)] for x, y in points if x is not None and y is not None]
 
 
 _LINK = re.compile(

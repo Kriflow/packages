@@ -42,6 +42,14 @@ recorded Facebook video is answered when its `publishing_phase` is complete, els
 again when its upload never completed, then finished. A new key (a stage visited again) starts a
 new record.
 
+That record is the call's Publish Record, and the publish resumes safely (`safe_resume`): it
+begins with the file's fingerprint (its hash, the run and the key) and the time, before the first
+byte, and is written whole, then renamed into place. A record that cannot be read, a file that
+differs from its fingerprint, or a failure while finishing what a Platform recorded answers
+`unsure:` (by Platform, under `failed`, when another Platform posted) instead of posting blind.
+The caption match is a hint: only a post made since the record began counts. An answer whose
+every post an earlier try made carries `already_posted`.
+
 `outcomes` (the Capability) answers each post's `instagram_views` (the media insights metric
 `views`, which replaced Reels `plays`), for a Reel also `instagram_reach` and
 `instagram_avg_watch_seconds` (`ig_reels_avg_watch_time`), `facebook_views` (the Reel's
@@ -51,6 +59,7 @@ account's latest media are listed to find it. A Platform whose insights the sign
 (Meta's permission error codes 10 and 200 to 299) is skipped, and the answer's `_notice` names
 the missing permission (`instagram_manage_insights`, `read_insights`) instead of failing."""
 
+import hashlib
 import json
 import os
 import re
@@ -492,9 +501,12 @@ def _processed(http: httpx.Client, token: str, container: str) -> str:
     )
 
 
-def _published_from(http: httpx.Client, token: str, instagram: str, caption: str) -> str:
-    """The media an earlier try published, Meta having kept no link from container to media:
-    the newest post with this caption."""
+def _published_from(
+    http: httpx.Client, token: str, instagram: str, caption: str, since: str = ""
+) -> str:
+    """The media an earlier try published from its recorded container, Meta having kept no link
+    from container to media: the newest post with this caption made `since` the record began.
+    A hint only, so a miss is unsure, never a reason to post again."""
     # ponytail: the newest 25 posts; a retry comes minutes after, well within them.
     newest = _call(
         http,
@@ -502,12 +514,22 @@ def _published_from(http: httpx.Client, token: str, instagram: str, caption: str
         f"{instagram}/media",
         "finding the published Reel",
         token,
-        {"fields": "id,caption", "limit": "25"},
+        {"fields": "id,caption,timestamp", "limit": "25"},
     ).get("data", [])
     for media in newest:
-        if media.get("caption") == caption:
+        made = str(media.get("timestamp") or "")
+        if media.get("caption") == caption and (not since or not made or _at(made) >= _at(since)):
             return str(media["id"])
-    raise ToolError("Instagram published the Reel, but it is not among the account's newest posts")
+    raise ToolError(
+        "unsure: Instagram published the Reel, but no post made since the first try has its caption"
+    )
+
+
+def _at(when: str) -> datetime:
+    """A Graph timestamp (2026-11-22T10:00:00+0000) or an ISO time, to the second."""
+    return datetime.fromisoformat(re.sub(r"([+-]\d\d)(\d\d)$", r"\1:\2", when)).replace(
+        microsecond=0
+    )
 
 
 def post_to_instagram(
@@ -518,13 +540,17 @@ def post_to_instagram(
     fields: Mapping[str, Any],
     kept: Mapping[str, str],
     keep: Keep,
+    since: str = "",
 ) -> dict[str, str]:
     """Post `video` as a Reel to the Instagram account, or finish what `kept` recorded of an
-    earlier try; answers its media `id` and `url`."""
+    earlier try (begun `since`); answers its media `id` and `url`, and `found` when the earlier
+    try had published it."""
     caption = full_caption(str(fields.get("caption") or ""), hashtags(fields.get("hashtags")))
+    found = ""
     if media := kept.get("id"):
+        found = "yes"
         if kept.get("url"):
-            return {"id": media, "url": kept["url"]}
+            return {"id": media, "url": kept["url"], "found": found}
     else:
         created = kept.get("container")
         if created and _status(http, token, created).get("status_code") == "EXPIRED":
@@ -547,7 +573,7 @@ def post_to_instagram(
             upload(http, token, uri, video)
             keep(container=created)
         if _processed(http, token, created) == "PUBLISHED":
-            media = _published_from(http, token, instagram, caption)
+            media, found = _published_from(http, token, instagram, caption, since), "yes"
         else:
             media = str(
                 _call(
@@ -563,7 +589,7 @@ def post_to_instagram(
     link = _call(http, "GET", media, "reading the Reel's link", token, {"fields": "permalink"})
     url = str(link.get("permalink") or "")
     keep(url=url)
-    return {"id": media, "url": url}
+    return {"id": media, "url": url, "found": found}
 
 
 # The Facebook Page: the Page's Reels upload, start, the file, then finish
@@ -581,7 +607,7 @@ def post_to_facebook(
     """Post `video` as a Reel to the Page, published, as a draft or scheduled, or finish what
     `kept` recorded of an earlier try; answers its video `id` and `url`."""
     if kept.get("url"):
-        return {"id": kept["video"], "url": kept["url"]}
+        return {"id": kept["video"], "url": kept["url"], "found": "yes"}
     if long := _too_long(video):
         raise ToolError(long)
     path, what = f"{page}/video_reels", "posting the Reel to the Page"
@@ -592,7 +618,7 @@ def post_to_facebook(
         if (status.get("publishing_phase") or {}).get("status") == "complete":
             url = f"https://www.facebook.com/reel/{reel}"
             keep(url=url)
-            return {"id": reel, "url": url}
+            return {"id": reel, "url": url, "found": "yes"}
     else:
         started = _call(http, "POST", path, what, token, {"upload_phase": "start"})
         reel, uri = str(started["video_id"]), started.get("upload_url")
@@ -642,17 +668,41 @@ def comment_on(http: httpx.Client, token: str, post: str, text: str) -> str:
 
 
 def record_of(input_path: Path, idempotency_key: str) -> Path | None:
-    """Where a stage keeps what it posted: `meta-<key>.json` in its folder of the run its input
-    is in (`<world>/runs/<run>/<stage>`, the one folder it may write). The key is the stage id,
-    or `<stage id>.<visit>` for a stage visited again. None outside a run."""
+    """Where a stage keeps what it posted, its Publish Record: `meta-<key>.json` in its folder of
+    the run its input is in (`<world>/runs/<run>/<stage>`, the one folder it may write). The key
+    is the stage id, then `.<visit>` for a stage visited again or `.again<n>` for Post it now.
+    None outside a run."""
     run = next((p for p in input_path.parents if p.parent.name == "runs"), None)
-    if not idempotency_key or run is None:
-        return None
-    stage = idempotency_key
-    if not (run / stage).is_dir():
-        stage = idempotency_key.rpartition(".")[0] or idempotency_key
-    folder = run / stage
-    return folder / f"meta-{idempotency_key}.json" if folder.is_dir() else None
+    folder = run / idempotency_key.split(".")[0] if run and idempotency_key else None
+    return folder / f"meta-{idempotency_key}.json" if folder and folder.is_dir() else None
+
+
+def _read(record: Path | None) -> dict[str, Any]:
+    """What the record holds; {} when there is none. One that cannot be read is unsure."""
+    if record is None or not record.exists():
+        return {}
+    try:
+        kept = json.loads(record.read_text())
+        assert isinstance(kept, dict)
+        return kept
+    except (OSError, ValueError, AssertionError) as exc:
+        raise ToolError(f"unsure: the Publish Record {record.name} could not be read") from exc
+
+
+def _write(record: Path | None, kept: Mapping[str, Any]) -> None:
+    """Written whole beside it, then renamed over it: a cut leaves the old or the new record."""
+    if record is not None:
+        part = record.with_name(record.name + ".part")
+        part.write_text(json.dumps(kept))
+        os.replace(part, record)
+
+
+def fingerprint(video: Path, record: Path | None, idempotency_key: str) -> str:
+    """The file's hash with the run and the key (the stage and its visit) it is posted under."""
+    with video.open("rb") as body:
+        digest = hashlib.file_digest(body, "sha256").hexdigest()
+    run = record.parents[1].name if record else ""
+    return f"{digest}:{run}:{idempotency_key}"
 
 
 def publish_fields(
@@ -668,12 +718,17 @@ def publish_fields(
     video = Path(input_path)
     if not video.is_file():
         raise ToolError(f"the video {video} does not exist")
-    who = account_of(http, env)
     path = record_of(video, idempotency_key)
-    record: dict[str, dict[str, str]] = (
-        json.loads(path.read_text()) if path and path.is_file() else {}
-    )
+    record = _read(path)
+    marked = fingerprint(video, path, idempotency_key)
+    if record and record.get("fingerprint") != marked:
+        raise ToolError("unsure: the video is not the one an earlier try began posting")
+    who = account_of(http, env)
+    if not record:  # the intent, before the first byte
+        record.update(fingerprint=marked, at=datetime.now(UTC).isoformat(timespec="seconds"))
+        _write(path, record)
     links: dict[str, str] = {}
+    found: list[str] = []
     failed: dict[str, str] = {}
     text = str(fields.get("comment") or "").strip()
     comments: dict[str, str] = {}
@@ -681,11 +736,11 @@ def publish_fields(
     post_id = None
     for platform in fields.get("platforms") or PLATFORMS:
         kept = record.setdefault(platform, {})
+        resuming = bool(kept)  # an earlier try began here: what fails now is unsure
 
         def keep(kept: dict[str, str] = kept, **values: str) -> None:
             kept.update(values)
-            if path:
-                path.write_text(json.dumps(record))
+            _write(path, record)
 
         try:
             if platform == "facebook":
@@ -694,11 +749,15 @@ def publish_fields(
             elif not who["instagram"]:
                 raise ToolError("the Page has no linked Instagram account")
             else:
-                instagram = who["instagram"]
-                posted = post_to_instagram(http, env[TOKEN], instagram, video, fields, kept, keep)
+                instagram, since = who["instagram"], str(record.get("at") or "")
+                posted = post_to_instagram(
+                    http, env[TOKEN], instagram, video, fields, kept, keep, since
+                )
             links[platform], post_id = posted["url"], post_id or posted["id"]
+            found += [platform] if posted.get("found") else []
         except ToolError as exc:
-            failed[platform] = str(exc)
+            unsure = resuming and not str(exc).startswith("unsure:")
+            failed[platform] = f"unsure: {exc}" if unsure else str(exc)
             continue
         if text:  # the post stands whatever happens to its comment
             try:
@@ -716,6 +775,7 @@ def publish_fields(
         "id": post_id,
         "failed": failed,
         "public": fields.get("visibility") != "draft",  # a draft only the Page's admins see
+        **({"already_posted": True} if found == list(links) else {}),
         **({"scheduled_for": str(when)} if when else {}),
         **({"comments": comments, "comment_failed": comment_failed} if text else {}),
     }

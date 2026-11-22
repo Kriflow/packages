@@ -187,8 +187,17 @@ def test_hashtags_and_tags_past_the_limits_are_problems(
 # The Data API, against a fake Google
 
 
+class Killed(BaseException):
+    """The connector process dying mid-call (a deploy): nothing in it catches this."""
+
+
 class FakeGoogle:
-    """`uploads` are the channel's videos, newest first, as `videos.list` part snippet answers."""
+    """`uploads` are the channel's videos, newest first, as `videos.list` part snippet answers.
+    Its one resumable session keeps the bytes sent; once whole, it is a video (`made` counts
+    them). `cut` kills the call at the first request of that kind (`start` the session, `bytes`
+    the file), before Google sees it or, with `cut_after`, after Google answered it; `half`
+    takes half the file's bytes, then kills. `gone` says the session expired; `unreachable`
+    drops every status query."""
 
     def __init__(
         self,
@@ -197,6 +206,11 @@ class FakeGoogle:
         comment_error: tuple[int, dict[str, Any]] | None = None,
         comments: list[str] | None = None,
         comment_unreachable: bool = False,
+        cut: str = "",
+        cut_after: bool = False,
+        half: bool = False,
+        gone: bool = False,
+        unreachable: bool = False,
     ) -> None:
         self.requests: list[httpx.Request] = []
         self.upload_status = upload_status
@@ -204,9 +218,27 @@ class FakeGoogle:
         self.comment_error = comment_error  # (status, Google's error) commentThreads answers
         self.comments = comments or []  # the texts of comments already on the video
         self.comment_unreachable = comment_unreachable  # commentThreads drops the connection
+        self.cut, self.cut_after, self.half = cut, cut_after, half
+        self.gone, self.unreachable = gone, unreachable
+        self.size, self.got, self.made = 0, b"", 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        upload = request.url.path.startswith("/upload")
+        querying = request.headers.get("content-range", "").startswith("bytes */")
+        kind = (
+            "start" if upload and request.method == "POST" else "bytes" * (upload and not querying)
+        )
+        cut = bool(kind) and self.cut == kind
+        self.cut = "" if cut else self.cut
+        if cut and not self.cut_after:
+            raise Killed
         self.requests.append(request)
+        answer = self.answer(request)
+        if cut:
+            raise Killed
+        return answer
+
+    def answer(self, request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/commentThreads"):
             if self.comment_unreachable:
                 raise httpx.ConnectError("connection dropped", request=request)
@@ -234,10 +266,30 @@ class FakeGoogle:
             ids = request.url.params["id"].split(",")
             return httpx.Response(200, json={"items": [v for v in self.uploads if v["id"] in ids]})
         if request.method == "POST":
+            self.size, self.got = int(request.headers["x-upload-content-length"]), b""
             return httpx.Response(200, headers={"location": SESSION})
+        if self.gone:
+            return httpx.Response(404, json={"error": {"message": "Not Found"}})
+        whole = httpx.Response(200, json={"id": f"vid{self.made}", "status": {}})
+        if request.headers.get("content-range", "").startswith("bytes */"):  # where it stands
+            if self.unreachable:
+                raise httpx.ConnectError("connection dropped", request=request)
+            if self.made:
+                return whole
+            reached = {"range": f"bytes=0-{len(self.got) - 1}"} if self.got else {}
+            return httpx.Response(308, headers=reached)
         if self.upload_status != 200:
             return httpx.Response(self.upload_status, json={"error": {"message": "quotaExceeded"}})
-        return httpx.Response(200, json={"id": "vid1", "status": {"privacyStatus": "private"}})
+        sent = request.read()
+        start = int(request.headers.get("content-range", "bytes 0-").split()[1].split("-")[0])
+        if self.half:
+            self.half, self.got = False, self.got[:start] + sent[: len(sent) // 2]
+            raise Killed
+        self.got = self.got[:start] + sent
+        if len(self.got) < self.size:
+            return httpx.Response(308, headers={"range": f"bytes=0-{len(self.got) - 1}"})
+        self.made += 1
+        return httpx.Response(200, json={"id": f"vid{self.made}", "status": {}})
 
     def starts(self) -> list[dict[str, Any]]:
         """The metadata of each upload started."""
@@ -328,6 +380,7 @@ def test_a_retry_finds_the_video_already_uploaded_under_its_key(video: Path) -> 
         "url": "https://youtu.be/vid0",
         "status": "published",
         "public": True,
+        "already_posted": True,  # it posted nothing
     }
     assert [r.method for r in google.requests] == ["GET", "GET", "GET"]
     channels, items, videos = google.requests
@@ -777,7 +830,7 @@ def v1(tmp_path: Path, provider: FakeProvider) -> Callable[[Any], Connectors]:
 
     def make(transport: Any) -> Connectors:
         connectors = registry(tmp_path, transport)
-        assert connectors.install_defaults()["youtube"] == "1.5.0"
+        assert connectors.install_defaults()["youtube"] == "1.6.0"
         connectors.offer_defaults("w")
         return connectors
 
@@ -788,13 +841,13 @@ def test_a_v1_sign_in_is_carried_over_so_no_new_sign_in_is_needed(
     v1: Callable[[Any], Connectors], provider: FakeProvider, tmp_path: Path
 ) -> None:
     connectors = v1(FakeTransport())
-    folder = tmp_path / "packages" / "youtube" / "1.5.0"
+    folder = tmp_path / "packages" / "youtube" / "1.6.0"
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "youtube.py").is_file()
     shared, _ = connectors.setups.values("youtube", "w")
     assert (shared["youtube_client_id"], shared["youtube_client_secret"]) == ("yt-app", "yt-secret")
     assert shared["youtube"]["refresh_token"] == "rt-from-v1"
     youtube = connectors.find("w", "youtube")
-    assert youtube is not None and youtube.version == "1.5.0"
+    assert youtube is not None and youtube.version == "1.6.0"
     assert connectors.missing(youtube) == [] and connectors.sign_in_needed(youtube) == []
 
     env = connectors._env(youtube)  # the first start refreshes the V1 token
@@ -834,3 +887,123 @@ def test_the_installed_package_previews_and_publishes_over_stdio(
     call = connectors.call_for("post")
     assert call is not None and call.tool == "publish"
     assert call.request == {"fields": values(shown), "idempotency_key": "post", "input_path": gone}
+
+
+# A publish cut off mid-flight (a deploy) resumes from its Publish Record
+
+
+@pytest.fixture
+def staged(tmp_path: Path) -> Path:
+    """The video in a run's folder, beside the publish stage's folder its record goes in."""
+    run = tmp_path / "runs" / "run_1"
+    (run / "post").mkdir(parents=True)  # the core makes the stage's folder
+    video = run / "01-render" / "short.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"\x00video" * 1000)
+    return video
+
+
+def cut_then_resumed(google: FakeGoogle, video: Path, **confirmed: Any) -> dict[str, Any]:
+    """Publish under the stage's key until the cut kills the call, then call again."""
+    with pytest.raises(Killed):
+        post(google, video, "post", **confirmed)
+    return post(google, video, "post", **confirmed)
+
+
+def starts(google: FakeGoogle) -> int:
+    return sum(1 for r in google.requests if r.method == "POST" and "upload" in r.url.path)
+
+
+@pytest.mark.parametrize(
+    ("cut", "after", "starts_made"),
+    [
+        ("start", False, 1),  # before the session: it starts afresh
+        ("start", True, 2),  # the session's answer lost: a session with no bytes makes nothing
+        ("bytes", False, 1),  # the session recorded, no byte sent: it sends from the first
+    ],
+)
+def test_a_publish_cut_before_any_byte_arrived_uploads_once(
+    staged: Path, cut: str, after: bool, starts_made: int
+) -> None:
+    google = FakeGoogle(cut=cut, cut_after=after)
+    out = cut_then_resumed(google, staged)
+    assert (out["id"], google.made, starts(google)) == ("vid1", 1, starts_made)
+    assert "already_posted" not in out and google.got == staged.read_bytes()
+
+
+def test_a_publish_cut_mid_file_continues_in_the_same_session(staged: Path) -> None:
+    google = FakeGoogle(half=True)
+    out = cut_then_resumed(google, staged)
+    assert (out["id"], google.made, starts(google)) == ("vid1", 1, 1)
+    assert google.got == staged.read_bytes()
+    query, rest = google.requests[-2:]
+    size = staged.stat().st_size
+    assert query.headers["content-range"] == f"bytes */{size}"
+    assert rest.headers["content-range"] == f"bytes {size // 2}-{size - 1}/{size}"
+
+
+def test_a_video_uploaded_just_before_the_cut_is_found_from_its_session(staged: Path) -> None:
+    google = FakeGoogle(cut="bytes", cut_after=True)  # whole, but its answer never came
+    out = cut_then_resumed(google, staged, comment="Hi")
+    assert (out["id"], out["already_posted"], google.made) == ("vid1", True, 1)
+    assert out["comments"] == {"youtube": "cmt1"}  # the cut came before the comment
+    assert not any(r.url.path.endswith("/channels") for r in google.requests[-4:])  # no search
+    asked = len(google.requests)
+    again = post(google, staged, "post", comment="Hi")  # the record names video and comment
+    assert (again["id"], again["already_posted"], again["comments"]) == (
+        "vid1",
+        True,
+        {"youtube": "cmt1"},
+    )
+    assert len(google.requests) == asked  # Google is not asked again
+
+
+def test_an_expired_session_falls_back_to_the_tag_search_and_never_uploads_blind(
+    staged: Path,
+) -> None:
+    google = FakeGoogle(cut="bytes")
+    with pytest.raises(Killed):
+        post(google, staged, "post")
+    google.gone = True
+    with pytest.raises(ToolError, match="^unsure: the upload session is gone"):
+        post(google, staged, "post")
+    google.uploads = [{"id": "vid7", "snippet": {"tags": ["swarmify-post"]}}]
+    out = post(google, staged, "post")
+    assert (out["id"], out["already_posted"], starts(google)) == ("vid7", True, 1)
+
+
+def test_a_check_that_cannot_reach_google_or_a_changed_or_broken_record_is_unsure(
+    staged: Path,
+) -> None:
+    google = FakeGoogle(cut="bytes")
+    with pytest.raises(Killed):
+        post(google, staged, "post")
+    google.unreachable = True
+    with pytest.raises(ToolError, match="^unsure: the upload session could not be reached"):
+        post(google, staged, "post")
+    record = staged.parents[1] / "post" / "youtube-post.json"
+    kept = record.read_text()
+    staged.write_bytes(b"another cut")
+    with pytest.raises(ToolError, match="^unsure: the video is not the one"):
+        post(google, staged, "post")
+    record.write_text(kept[: len(kept) // 2])  # cut mid-write by an older writer
+    with pytest.raises(ToolError, match="^unsure: the Publish Record .* could not be read"):
+        post(google, staged, "post")
+    assert google.made == 0 and starts(google) == 1
+
+
+def test_a_new_key_starts_a_new_record_and_posts_again(staged: Path) -> None:
+    google = FakeGoogle()
+    assert post(google, staged, "post")["id"] == "vid1"
+    assert post(google, staged, "post.1")["id"] == "vid2"  # a send-back's visit
+    assert post(google, staged, "post.again2")["id"] == "vid3"  # Post it now at the gate
+    folder = staged.parents[1] / "post"
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "youtube-post.1.json",
+        "youtube-post.again2.json",
+        "youtube-post.json",
+    ]
+
+
+def test_the_manifest_declares_its_publish_resumes_safely() -> None:
+    assert "safe_resume" in read_manifest(HERE)["capabilities"]

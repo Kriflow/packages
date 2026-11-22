@@ -1,7 +1,8 @@
 # The HyperFrames render connector (README.md beside this file). Installed with Swarmify from this
 # folder but not enabled by default: Remotion stays a world's video engine until it enables this.
 name = "hyperframes_render"
-version = "1.0.2"
+version = "1.0.3"
+contract = 1
 label = "HyperFrames render"
 about = "Renders a script with the HyperFrames CLI. Needs Node 22 and a HyperFrames project."
 kind = "stage"
@@ -73,7 +74,7 @@ description = "the video"
 media_type = "video/mp4"
 
 [setup]
-help_url = "https://github.com/wagleanuj/swarmify/tree/main/connectors/hyperframes_render#setup"
+help_url = "https://github.com/Kriflow/packages/tree/main/hyperframes_render#setup"
 
 [[config]]
 key = "workers"

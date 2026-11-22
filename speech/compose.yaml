@@ -1,5 +1,5 @@
 # The speech engines, run by the operator beside Swarmify (ADR 0026; README.md, Running the
-# engines beside Swarmify): `docker compose -f connectors/speech/compose.yaml up -d` from the
+# engines beside Swarmify): `docker compose -f speech/compose.yaml up -d` from the
 # repository root, after Swarmify's own compose file, whose network this one joins. Swarmify polls
 # their /health and never starts or stops them.
 name: swarmify-speech

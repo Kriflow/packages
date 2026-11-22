@@ -2,7 +2,8 @@
 # Upload-Post's HTTP API (ADR 0015). A default package: Swarmify installs it from this folder and
 # enables it for every world that has not decided otherwise.
 name = "upload_post"
-version = "1.0.1"
+version = "1.0.2"
+contract = 1
 label = "Upload-Post"
 about = "Posts or schedules a video to YouTube, TikTok and Instagram through Upload-Post."
 kind = "publish"
@@ -49,7 +50,7 @@ media_type = "video/mp4"
 
 [setup]
 test = "check_key"
-help_url = "https://github.com/wagleanuj/swarmify/tree/main/connectors/upload_post#setup"
+help_url = "https://github.com/Kriflow/packages/tree/main/upload_post#setup"
 
 [[config]]
 key = "api_key"

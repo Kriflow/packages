@@ -39,8 +39,8 @@ or stops them (ADR 0026): you run them, as below.
 root:
 
 ```sh
-docker compose -f connectors/speech/compose.yaml up -d                            # Kokoro
-docker compose -f connectors/speech/compose.yaml --profile chatterbox-gpu up -d --build
+docker compose -f speech/compose.yaml up -d                            # Kokoro
+docker compose -f speech/compose.yaml --profile chatterbox-gpu up -d --build
 ```
 
 From the api container the engines are then `http://kokoro:8880`, `http://chatterbox:8881` or
@@ -71,11 +71,11 @@ connector tries them in the order its Speech engines Setting (`SPEECH_ENDPOINTS`
 | Engine | Port | License | Start it |
 |---|---|---|---|
 | Chatterbox Turbo (Resemble AI), the first choice: natural takes | 8881 | MIT; every take carries Resemble's PerTh watermark, inaudible | natively, below, or a compose profile |
-| Kokoro-FastAPI, the fallback: fast on a CPU, plainer voice | 8880 | Apache 2.0 | `docker compose -f connectors/speech/compose.yaml up -d kokoro` |
+| Kokoro-FastAPI, the fallback: fast on a CPU, plainer voice | 8880 | Apache 2.0 | `docker compose -f speech/compose.yaml up -d kokoro` |
 
 - `chatterbox/` is its own uv project: PyTorch, `chatterbox-tts`, `faster-whisper` and
   `setuptools<81` (the watermarker needs `pkg_resources`). Natively, from the repository root:
-  `cd connectors/speech/chatterbox && uv sync --frozen && PYTORCH_ENABLE_MPS_FALLBACK=1 uv run
+  `cd speech/chatterbox && uv sync --frozen && PYTORCH_ENABLE_MPS_FALLBACK=1 uv run
   --frozen uvicorn server:app --port 8881`. The first start downloads the models from Hugging
   Face, later starts load them in about 30 seconds, once. On a Mac it runs on the GPU (MPS), so run
   it natively there, not in Docker; elsewhere it runs on the CPU.
@@ -92,13 +92,13 @@ connector tries them in the order its Speech engines Setting (`SPEECH_ENDPOINTS`
   takes `exaggeration`, `cfg_weight` and `temperature` (Voices, `options`); `/health` lists both
   in `models`. `test_speech_server.py` checks this with fake models.
 - On a host without an Apple GPU, Compose runs Chatterbox too: `docker compose -f
-  connectors/speech/compose.yaml --profile chatterbox up -d --build`, with the Speech engines
+  speech/compose.yaml --profile chatterbox up -d --build`, with the Speech engines
   Setting `http://chatterbox:8881,http://kokoro:8880`. Its models stay in the
   `swarmify_speech-models` volume. It needs about 7 GB of memory on the CPU
   (its peak while loading), more than Docker Desktop's default leaves beside other containers. Both engines bind to `127.0.0.1` only:
   they have no sign-in.
 - On a host with an NVIDIA GPU (a driver for CUDA 12.4 or newer and the NVIDIA Container Toolkit),
-  use `docker compose -f connectors/speech/compose.yaml --profile chatterbox-gpu up -d --build`
+  use `docker compose -f speech/compose.yaml --profile chatterbox-gpu up -d --build`
   instead, with the Setting `http://chatterbox-gpu:8881,http://kokoro:8880`. It builds with PyTorch's CUDA
   wheels and `/health` says `"device": "cuda"`; on the CPU Chatterbox runs at about 11x real
   time. Natively on Linux, `uv sync --extra cpu` or `--extra cu124` picks the wheels.
@@ -277,7 +277,7 @@ them:
   the catalog entry it can that shares the most tags with it, else its default, and
   `timings.json` records which voice spoke.
 - Starter voices without recording anyone: `uv run --project connectors/speech python
-  connectors/speech/voices.py <world id> [presets...]` (in Docker, `docker compose exec api sh -c
+  speech/voices.py <world id> [presets...]` (in Docker, `docker compose exec api sh -c
   'cd /data/packages/speech/1.1.1 && .venv/bin/python voices.py <world id>'`) has Kokoro
   (`KOKORO_URL`, default `http://localhost:8880`; started from this folder's compose file when it
   is not up, or it says so when Docker is unavailable) speak one neutral 9 s

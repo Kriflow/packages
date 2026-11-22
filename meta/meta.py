@@ -47,7 +47,9 @@ new record.
 `instagram_avg_watch_seconds` (`ig_reels_avg_watch_time`), `facebook_views` (the Reel's
 `fb_reels_total_plays`) and their sum `views`, for every post with an Instagram or Facebook link,
 whichever connector posted it. An Instagram link names a shortcode, not a media ID, so the
-account's latest media are listed to find it."""
+account's latest media are listed to find it. A Platform whose insights the sign-in may not read
+(Meta's permission error codes 10 and 200 to 299) is skipped, and the answer's `_notice` names
+the missing permission (`instagram_manage_insights`, `read_insights`) instead of failing."""
 
 import json
 import os
@@ -76,6 +78,16 @@ COMMENT_PERMISSION_FAILED = (
     " (instagram_manage_comments on Instagram, pages_manage_engagement on Facebook); add it to"
     " the Meta app's login configuration, then sign in to Meta again on the Connectors page"
 )
+NOTICE = "_notice"
+"""The outcomes answer's key for what could not be read and how to fix it."""
+INSIGHTS_PERMISSION = {
+    "instagram": "Instagram insights are not read: the sign-in lacks instagram_manage_insights",
+    "facebook": "Facebook Reel plays are not read: the sign-in lacks read_insights",
+}
+INSIGHTS_FIX = (
+    "; add it to the Meta app's login configuration, then sign in to Meta again on the"
+    " Connectors page."
+)
 VISIBILITIES = ("public", "draft")
 EDITABLE = ("caption", "hashtags", "comment")
 CAPTION_MAX = 2_200  # Instagram's limits for a caption, its hashtags and @mentions
@@ -98,6 +110,14 @@ mcp = MCPServer("meta")
 # The Graph API
 
 
+class Unpermitted(ToolError):
+    """Meta refused a call for a permission the sign-in lacks (code 10 or 200 to 299)."""
+
+
+def _permission(code: Any) -> bool:
+    return code == 10 or (isinstance(code, int) and 200 <= code <= 299)
+
+
 def _error(response: httpx.Response, what: str) -> ToolError:
     try:
         detail = response.json().get("error", {})
@@ -106,10 +126,15 @@ def _error(response: httpx.Response, what: str) -> ToolError:
     if not isinstance(detail, dict):
         detail = {"message": str(detail)}
     message = detail.get("message") or response.text[:300]
+    if _permission(detail.get("code")):
+        # same message as before, so publish still says to sign in again; outcomes notice it
+        kind = Unpermitted
+    else:
+        kind = ToolError
     if detail.get("code") == 190 or detail.get("type") == "OAuthException":
         # the core marks the account for sign-in again
-        return ToolError(f"auth_failed: {what} failed, Meta refused the sign-in: {message}")
-    return ToolError(f"{what} failed ({response.status_code}): {message}")
+        return kind(f"auth_failed: {what} failed, Meta refused the sign-in: {message}")
+    return kind(f"{what} failed ({response.status_code}): {message}")
 
 
 def _call(
@@ -611,7 +636,7 @@ def comment_on(http: httpx.Client, token: str, post: str, text: str) -> str:
         code = (sent.json().get("error") or {}).get("code")
     except (ValueError, AttributeError):
         code = None
-    if code == 10 or (isinstance(code, int) and 200 <= code <= 299):  # Meta's permission codes
+    if _permission(code):
         raise ToolError(COMMENT_PERMISSION_FAILED)
     raise ToolError(str(_error(sent, "posting the comment")).removeprefix("auth_failed: "))
 
@@ -751,10 +776,14 @@ def _values(answer: Mapping[str, Any]) -> dict[str, int]:
     return out
 
 
-def _quietly[T](read: Callable[[], T]) -> T | None:
-    """A read's value, None when Meta fails it; a refused sign-in still fails the tool."""
+def _quietly[T](read: Callable[[], T], unpermitted: Callable[[], None] = lambda: None) -> T | None:
+    """A read's value, None when Meta fails it; a missing permission calls `unpermitted`, a
+    refused sign-in still fails the tool."""
     try:
         return read()
+    except Unpermitted:
+        unpermitted()
+        return None
     except ToolError as exc:
         if str(exc).startswith("auth_failed"):
             raise
@@ -781,17 +810,28 @@ def media_ids(http: httpx.Client, token: str, instagram: str, codes: set[str]) -
 
 def outcomes_of(http: httpx.Client, env: Mapping[str, str], posts: list[dict[str, Any]]) -> dict:
     """`instagram_views`, `facebook_views` and their sum `views` of every post with an Instagram
-    or Facebook link, by post id. Meta failing for one post leaves it out, not the others."""
+    or Facebook link, by post id. Meta failing for one post leaves it out, not the others. A
+    Platform whose insights the sign-in may not read is skipped with one NOTICE saying so."""
     wanted = claimed(posts)
     if not wanted:
         return {}
     who, token = account_of(http, env), env[TOKEN]
+    refused: set[str] = set()
+
+    def unpermitted(platform: str) -> Callable[[], None]:
+        return lambda: refused.add(platform)
+
     codes = {w["instagram"] for w in wanted.values() if "instagram" in w}
     media = {}
     if codes and who["instagram"]:
-        media = _quietly(lambda: media_ids(http, token, str(who["instagram"]), codes)) or {}
+        listed = _quietly(
+            lambda: media_ids(http, token, str(who["instagram"]), codes), unpermitted("instagram")
+        )
+        media = listed or {}
 
     def views(platform: str, thing: str) -> int | None:
+        if platform in refused:
+            return None
         if platform == "instagram":
             if thing not in media:
                 return None
@@ -799,16 +839,20 @@ def outcomes_of(http: httpx.Client, env: Mapping[str, str], posts: list[dict[str
         else:
             path, metric = f"{thing}/video_insights", "fb_reels_total_plays"
         what = f"reading the {platform.title()} views"
-        return _quietly(lambda: _value(_get(http, path, what, token, metric=metric)))
+        return _quietly(
+            lambda: _value(_get(http, path, what, token, metric=metric)), unpermitted(platform)
+        )
 
     def reel(code: str) -> dict[str, float] | None:
         """An Instagram Reel's views, reach and average watch time in one read; None when Meta
         refuses the Reels-only metrics, as for a photo post."""
-        if code not in media:
+        if code not in media or "instagram" in refused:
             return None
         path, metric = f"{media[code]}/insights", ",".join(REEL_METRICS)
         what = "reading the Instagram Reel's insights"
-        got = _quietly(lambda: _values(_get(http, path, what, token, metric=metric)))
+        got = _quietly(
+            lambda: _values(_get(http, path, what, token, metric=metric)), unpermitted("instagram")
+        )
         if got is None or "views" not in got:
             return None
         out: dict[str, float] = {"instagram_views": got["views"]}
@@ -829,12 +873,16 @@ def outcomes_of(http: httpx.Client, env: Mapping[str, str], posts: list[dict[str
         if found:
             total = sum(n for k, n in found.items() if k.endswith("_views"))
             out[post] = {"views": total, **found}
+    if refused:
+        notes = [INSIGHTS_PERMISSION[p] for p in PLATFORMS if p in refused]
+        out[NOTICE] = ". ".join(notes) + INSIGHTS_FIX
     return out
 
 
 @mcp.tool(
     description="The Outcomes Capability: views on Instagram and Facebook of every post with a"
-    " link to either, whoever posted it, by post id."
+    " link to either, whoever posted it, by post id; an Instagram Reel's reach and average watch"
+    " seconds too, and `_notice` naming a missing insights permission."
 )
 def outcomes(posts: list[dict[str, Any]]) -> dict[str, Any]:
     with httpx.Client(timeout=60.0) as http:

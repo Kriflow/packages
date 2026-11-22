@@ -568,7 +568,11 @@ def retention_curve(
     )
     if response.status_code != 200:
         return []
-    return [[row[0], row[1]] for row in response.json().get("rows") or [] if len(row) >= 2]
+    answer = response.json()
+    names = [h.get("name") for h in answer.get("columnHeaders", [])]
+    rows = (dict(zip(names, row, strict=False)) for row in answer.get("rows") or [])
+    points = ([got.get("elapsedVideoTimeRatio"), got.get("audienceWatchRatio")] for got in rows)
+    return [p for p in points if None not in p]
 
 
 _LINK = re.compile(

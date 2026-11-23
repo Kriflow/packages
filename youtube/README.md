@@ -20,17 +20,21 @@ Once: create a Google Cloud project, enable the YouTube Data API v3 and the YouT
 API, configure the consent screen (while it is in Testing, add yourself as a test user) and create an OAuth client of type **Web
 application** whose authorized redirect URI is the one the Connectors page shows,
 `<the address you open Swarmify at>/api/setup/oauth/callback`. On the Connectors page save its client ID and secret as **YouTube account client ID** and
-**client secret**, then **Sign in** with the Google account that owns the channel. The account is
-shared by every world.
+**client secret**, then **Sign in** in each world with the Google account that owns that world's
+channel. The client ID and secret are shared by every world; the account is set per world, so each
+world posts to its own channel, and a world that has not signed in cannot post.
+
+Before 1.6.2 the account was shared by every world. A world moving its pin from an older version
+to 1.6.2 or later keeps a copy of the shared sign-in as its own (Kriflow/kriflow#610), so it
+needs no new sign-in; the shared one stays for the older versions saved workflow versions record.
 
 Upgrading from V1, where the terminal `authorize` command printed `YOUTUBE_REFRESH_TOKEN` for
 `.env`: the start that first installs the package moves `YOUTUBE_CLIENT_ID` and
-`YOUTUBE_CLIENT_SECRET` into the client ID and secret, and `YOUTUBE_REFRESH_TOKEN` into the
-account's token set, refreshed on first use, so no new sign-in is needed. The `authorize` command
-is gone. V1's client is a Desktop app, which Google lets redirect only to the machine itself: to
-sign in again with it, use the loopback fallback (Swarmify's README, OAuth sign-in), or create a
-Web application client as above. View counts need the `youtube.readonly` scope, which V1 did not
-ask for: a V1 refresh token posts but reads no Outcomes until you sign in again.
+`YOUTUBE_CLIENT_SECRET` into the client ID and secret. Since 1.6.2 `YOUTUBE_REFRESH_TOKEN` is not
+carried, since V1 does not say which world's channel it is: sign in in each world. The
+`authorize` command is gone. V1's client is a Desktop app, which Google lets redirect only to the
+machine itself: to sign in with it, use the loopback fallback (Swarmify's README, OAuth
+sign-in), or create a Web application client as above.
 
 Google and a `*.ts.net` address: Google accepts a redirect URI for a "Web application" client
 when it uses https, its host is not a raw IP, and its top-level domain is on the public suffix

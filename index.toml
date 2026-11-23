@@ -198,7 +198,7 @@ name = "youtube"
 description = "Uploads to YouTube through the Data API; a schedule keeps it private until then."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "youtube"
-ref = "youtube-v1.6.1"
+ref = "youtube-v1.6.2"
 contract = 1
 permissions = [
   "network: www.googleapis.com",

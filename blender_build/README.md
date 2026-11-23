@@ -5,8 +5,8 @@ script, checking each shot with stills, then the blender_render package's own re
 agent, turns it into the stage's video on the GPU. It is a Connector Package (ADR 0019) installed
 with Kriflow from its release tag here but **not enabled by default** (`enable_by_default = false`): a
 world enables it on the Connectors page together with `blender_render`, which a build renders
-through. Everything Swarmify knows of it is `swarmify-connector.toml`: it requests a Build
-Session (see Build Sessions in Swarmify's README, which covers the session, its sandbox, its
+through. Everything Kriflow knows of it is `swarmify-connector.toml`: it requests a Build
+Session (see Build Sessions in Kriflow's README, which covers the session, its sandbox, its
 budget and revisions after a send-back) and has no server of its own.
 
 What it gives the session, all files beside this one:

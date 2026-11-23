@@ -2,16 +2,16 @@
 
 The Remotion render connector: our stdio MCP wrapper over `remotion render` (ADR 0015). It
 renders a script artifact through a Remotion project's composition into a video. It is a
-Connector Package (ADR 0019) and one of Swarmify's default packages: on startup Swarmify installs
+Connector Package (ADR 0019) and one of Kriflow's default packages: on startup Kriflow installs
 it from its release tag here into `<data dir>/packages/remotion_render/<version>/` and enables it for
 every world that has not decided otherwise, so workflows call `remotion_render` exactly as before.
-Everything Swarmify knows of it is `swarmify-connector.toml`.
+Everything Kriflow knows of it is `kriflow-connector.toml`.
 
 Its install step (ADR 0026) puts beside it its Python (`uv sync`: the MCP SDK), the Remotion CLI
 (`npm ci` from `package-lock.json`) and the Chrome Headless Shell Remotion downloads for it
 (`npx remotion browser ensure`), about 800 MB, reaching only npm and Remotion's host for the
 browser (Google's storage where Remotion's own build does not fit the machine), its Manifest's
-`install_network`. Every render uses that browser, so a render needs nothing of Swarmify's image
+`install_network`. Every render uses that browser, so a render needs nothing of Kriflow's image
 but Node and, in Docker, Chrome's shared libraries. When it is missing (an install from a copy
 without `node_modules`) a Chrome Headless Shell on `PATH` is used instead, else the render fails
 saying to reinstall the package: a render cannot download one.
@@ -61,7 +61,7 @@ The workflow check reports a stage without an input, an output, a `project` or a
 The composition gets the script as input props, `{"script": <text>, "scriptPath": <path>, ...props}`
 (read them with `getInputProps()`). `remotion_render` answers with a long job and runs the render
 in a process of its own, which the stage polls with `remotion_render_status` in the same session,
-and which outlives a restart of Swarmify, whose stage then resumes polling it; progress comes from the CLI's `Rendered n/N` and `Encoded n/N` lines and
+and which outlives a restart of Kriflow, whose stage then resumes polling it; progress comes from the CLI's `Rendered n/N` and `Encoded n/N` lines and
 shows on the timeline. On success the video gets a sidecar, `short.mp4.md`, with frontmatter (type
 video, author remotion_render, world, run, stage, created, source script, composition, bytes, and
 the template's git commit when the project is a git checkout). On failure the stage fails with
@@ -87,8 +87,8 @@ at frame 1661 with `Error creating WebGL context`):
    the audio encoded once to AAC at 320k, into `short.mp4`.
 5. The hidden bundle and parts are deleted, whether it succeeded or not.
 
-Each chunk's render holds a Slot of the gpu Resource (`SWARMIFY_RESOURCE_GPU`, see Resources
-under the connector sandbox in Swarmify's README; `SWARMIFY_GPU_LOCK` from an older Swarmify)
+Each chunk's render holds a Slot of the gpu Resource (`KRIFLOW_RESOURCE_GPU`, see Resources
+under the connector sandbox in Kriflow's README; `SWARMIFY_GPU_LOCK` from an older Kriflow)
 while it runs, so another GPU job never draws on the card at the same time;
 while one does, the render waits and its progress says `waiting for the GPU`. Between chunks the
 lock is let go, so other jobs take turns with a long render.
@@ -100,9 +100,9 @@ and every render in software, stay one `remotion render`.
 
 ## In Docker
 
-Swarmify's image carries Node and the shared libraries and fonts Chrome needs, not Remotion or
+Kriflow's image carries Node and the shared libraries and fonts Chrome needs, not Remotion or
 Chrome: this package's install step puts both in `/data/packages`. Renders run in the `sandbox`
-service (Swarmify's README, Deployment), which mounts the volume's `worlds/` folder, where each
+service (Kriflow's README, Deployment), which mounts the volume's `worlds/` folder, where each
 world's Templates are, so an uploaded Template renders there as natively. Set **Render concurrency** to 2 there, or 1 on a small Docker Desktop VM (above);
 no `--gl` flag is passed: the default renders 3D on the Mac and in the image, and `--gl=angle`
 crashes in the image.
@@ -125,5 +125,5 @@ fake Remotion CLI on `PATH` (`fake_npx.py`), all in the real connector sandbox, 
 agent-written project trying to read the data directory's keys or the world's other assets, write
 outside its stage or into a Template and reach the internet is refused each time and each block
 logged. One real render runs when you opt in:
-`SWARMIFY_REMOTION_PROJECT=<project> SWARMIFY_REMOTION_COMPOSITION=<id> uv run pytest --no-cov connectors/remotion_render -k real_render` in a core checkout that `tools/test_packages.sh <core> remotion_render` has filled,
+`KRIFLOW_REMOTION_PROJECT=<project> KRIFLOW_REMOTION_COMPOSITION=<id> uv run pytest --no-cov connectors/remotion_render -k real_render` in a core checkout that `tools/test_packages.sh <core> remotion_render` has filled,
 the project copied into a world's Templates first.

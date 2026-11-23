@@ -92,12 +92,21 @@ def _up(http: httpx.Client, base: str) -> bool:
         return False
 
 
+def _data_dir() -> Path:
+    """Kriflow's data folder as the core finds it: `KRIFLOW_DATA_DIR`, else the old
+    `SWARMIFY_DATA_DIR`, else `~/.kriflow`, or `~/.swarmify` while only that one exists."""
+    if given := os.environ.get("KRIFLOW_DATA_DIR") or os.environ.get("SWARMIFY_DATA_DIR"):
+        return Path(given)
+    new, old = Path.home() / ".kriflow", Path.home() / ".swarmify"
+    return old if not new.exists() and old.exists() else new
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print("usage: python voices.py <world id> [kokoro presets...]", file=sys.stderr)
         return 2
     world, presets = argv[0], argv[1:] or list(STARTERS)
-    data = Path(os.environ.get("SWARMIFY_DATA_DIR", Path.home() / ".swarmify"))
+    data = _data_dir()
     folder = data / "worlds" / world
     if not folder.is_dir():
         print(f"no world {world} in {data / 'worlds'}", file=sys.stderr)

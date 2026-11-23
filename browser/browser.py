@@ -2,9 +2,10 @@
 agents drive with tools, and that signs in with a World Login it never shows them (spec: World
 Logins And Browser Connector).
 
-The core hands a stage's login to this process alone, as `SWARMIFY_LOGIN_NAME`, `_DOMAINS`
+The core hands a stage's login to this process alone, as `KRIFLOW_LOGIN_NAME`, `_DOMAINS`
 (comma-separated), `_USERNAME`, `_PASSWORD`, `_TOTP` (when set) and `_SESSION`, the path of its
-Saved Session (Playwright's storage state). `sign_in` fills the username, password and second
+Saved Session (Playwright's storage state); a core from before the rename names them
+`SWARMIFY_LOGIN_*` alone, which it still reads. `sign_in` fills the username, password and second
 factor itself, and only on a page whose origin, and every frame holding the form, is one of the
 login's domains (plain http only on loopback): an injected instruction cannot send the password
 elsewhere. After a sign-in, and when the process ends, the session goes to
@@ -18,7 +19,7 @@ input reads `[hidden]`. There is no tool that runs JavaScript, reads cookies or 
 or exports a HAR. Each process records to its stage's `browser/` folder: a WebM video per page,
 a PNG after each navigation and `actions.jsonl`, one line per tool call.
 
-It is a Connector Package (ADR 0019): `swarmify-connector.toml` beside it is everything Kriflow
+It is a Connector Package (ADR 0019): `kriflow-connector.toml` beside it is everything Kriflow
 knows of it.
 """
 
@@ -140,6 +141,12 @@ def allowed(url: str, domains: list[str]) -> bool:
     return False
 
 
+def _env(suffix: str) -> str | None:
+    """A variable the core gives this process: `KRIFLOW_<suffix>`, else `SWARMIFY_<suffix>`, which
+    cores from before the rename give alone (Kriflow/kriflow#595 sets both)."""
+    return os.environ.get(f"KRIFLOW_{suffix}") or os.environ.get(f"SWARMIFY_{suffix}")
+
+
 @dataclass
 class Login:
     name: str
@@ -151,16 +158,15 @@ class Login:
 
     @classmethod
     def from_env(cls) -> "Login | None":
-        env = os.environ
-        if not env.get("SWARMIFY_LOGIN_PASSWORD"):
+        if not (password := _env("LOGIN_PASSWORD")):
             return None
-        session = env.get("SWARMIFY_LOGIN_SESSION")
+        session = _env("LOGIN_SESSION")
         return cls(
-            env.get("SWARMIFY_LOGIN_NAME") or "login",
-            [d for d in env.get("SWARMIFY_LOGIN_DOMAINS", "").split(",") if d.strip()],
-            env.get("SWARMIFY_LOGIN_USERNAME", ""),
-            env["SWARMIFY_LOGIN_PASSWORD"],
-            env.get("SWARMIFY_LOGIN_TOTP") or None,
+            _env("LOGIN_NAME") or "login",
+            [d for d in (_env("LOGIN_DOMAINS") or "").split(",") if d.strip()],
+            _env("LOGIN_USERNAME") or "",
+            password,
+            _env("LOGIN_TOTP") or None,
             Path(session) if session else None,
         )
 
@@ -188,10 +194,10 @@ def _read_session(path: Path | None) -> dict[str, Any] | None:
 
 
 def _recording_folder() -> Path:
-    """Its stage's `browser/` folder (`SWARMIFY_STAGE_DIR`, package contract 2), or HOME's when
+    """Its stage's `browser/` folder (`KRIFLOW_STAGE_DIR`, package contract 2), or HOME's when
     it runs for no stage or may not write there (a swarm stage's server without a login)."""
     home = Path(os.environ.get("HOME", ".")) / "browser"
-    if stage := os.environ.get("SWARMIFY_STAGE_DIR"):
+    if stage := _env("STAGE_DIR"):
         try:
             (Path(stage) / "browser").mkdir(exist_ok=True)
             return Path(stage) / "browser"

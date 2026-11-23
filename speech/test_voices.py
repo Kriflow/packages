@@ -76,10 +76,16 @@ def test_the_default_set_is_varied_and_others_are_told_by_their_names() -> None:
     assert voices.described("bf_lily") == ("Kokoro preset bf_lily", ["british", "female"])
 
 
+@pytest.mark.parametrize("data_dir", ["KRIFLOW_DATA_DIR", "SWARMIFY_DATA_DIR"])
 def test_the_command_names_what_is_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    data_dir: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("SWARMIFY_DATA_DIR", str(tmp_path))
+    """The data folder under either name: an old `.env` still names `SWARMIFY_DATA_DIR`."""
+    monkeypatch.delenv("KRIFLOW_DATA_DIR", raising=False)
+    monkeypatch.setenv(data_dir, str(tmp_path))
     monkeypatch.setenv("KOKORO_URL", "http://127.0.0.1:9")  # nothing listens on discard
     assert voices.main([]) == 2
     assert voices.main(["world_1"]) == 1 and "no world world_1" in capsys.readouterr().err

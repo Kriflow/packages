@@ -1,9 +1,10 @@
-# The Blender render connector (README.md beside this file). Installed with Swarmify from this
+# The Blender render connector (README.md beside this file). Installed with Kriflow from this
 # folder but not enabled by default: a world enables it, with blender_build, when it makes videos
 # in Blender.
 name = "blender_render"
-version = "1.0.8"
-contract = 1
+version = "1.0.9"
+# 3: this Manifest is named kriflow-connector.toml, which cores from contract 3 read.
+contract = 3
 label = "Blender render"
 about = "Renders a Blender project's shots on the GPU, then its finish step, into one video."
 kind = "stage"
@@ -65,5 +66,6 @@ label = "Blender version"
 type = "string"
 default = "5.2.1"
 pattern = "[0-9]+\\.[0-9]+\\.[0-9]+"
+# The package's own Setting name, kept: renaming it is this package's call, not the core's.
 env = "SWARMIFY_BLENDER_VERSION"
 help = "The Blender a render runs, one the package pins a checksum for and installed (5.2.1)."

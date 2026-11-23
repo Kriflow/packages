@@ -32,6 +32,8 @@ from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
 from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
+VERSION = read_manifest(HERE)["version"]
+"""The version this folder releases, so a release never reddens its own tests."""
 NOW = datetime(2026, 10, 26, 12, tzinfo=UTC)
 ENV = {"YOUTUBE_ACCESS_TOKEN": "tok"}
 SESSION = "https://www.googleapis.com/upload/youtube/v3/videos?upload_id=u1"
@@ -683,7 +685,7 @@ def test_the_channel_tool_names_the_channel_the_account_posts_to() -> None:
             yt.channel_name(http, ENV)
 
 
-# The Manifest, and the package installed as Swarmify does at startup
+# The Manifest, and the package installed as Kriflow does at startup
 
 
 # The comment posted after publish
@@ -830,7 +832,7 @@ def v1(tmp_path: Path, provider: FakeProvider) -> Callable[[Any], Connectors]:
 
     def make(transport: Any) -> Connectors:
         connectors = registry(tmp_path, transport)
-        assert connectors.install_defaults()["youtube"] == "1.6.2"
+        assert connectors.install_defaults()["youtube"] == VERSION
         connectors.offer_defaults("w")
         connectors.offer_defaults("w2")
         signed_in = {"refresh_token": "rt-of-w", "expires_at": 0}  # as a sign-in in `w` keeps it
@@ -844,14 +846,14 @@ def test_the_v1_app_is_shared_and_each_world_signs_in_to_its_own_channel(
     v1: Callable[[Any], Connectors], provider: FakeProvider, tmp_path: Path
 ) -> None:
     connectors = v1(FakeTransport())
-    folder = tmp_path / "packages" / "youtube" / "1.6.2"
+    folder = tmp_path / "packages" / "youtube" / VERSION
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "youtube.py").is_file()
     shared, world = connectors.setups.values("youtube", "w")
     assert (shared["youtube_client_id"], shared["youtube_client_secret"]) == ("yt-app", "yt-secret")
     assert "youtube" not in shared  # V1's token names no world, so it is not carried
     assert world["youtube"]["refresh_token"] == "rt-of-w"
     youtube = connectors.find("w", "youtube")
-    assert youtube is not None and youtube.version == "1.6.2"
+    assert youtube is not None and youtube.version == VERSION
     assert connectors.missing(youtube) == [] and connectors.sign_in_needed(youtube) == []
     other = connectors.find("w2", "youtube")  # never signed in: w's channel is not its own
     assert other is not None and connectors.missing(other) == ["youtube"]

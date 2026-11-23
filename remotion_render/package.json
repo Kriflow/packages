@@ -1,5 +1,5 @@
 {
-  "name": "swarmify-remotion-render",
+  "name": "kriflow-remotion-render",
   "private": true,
   "description": "What the install step puts beside the render connector: the Remotion CLI, for its browser",
   "dependencies": {

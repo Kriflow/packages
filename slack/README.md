@@ -2,8 +2,8 @@
 
 The Slack connector: Remote Approvals in Slack. Each gate a run opens is posted to the world's
 channel with a button per answer that fits in one (Approve and Send back to the step before,
-Confirm, or the first few picks), and a link to Swarmify for notes, edits and every other answer.
-Once the gate closes, answered in Slack, in Swarmify or anywhere else, the message loses its
+Confirm, or the first few picks), and a link to Kriflow for notes, edits and every other answer.
+Once the gate closes, answered in Slack, in Kriflow or anywhere else, the message loses its
 buttons and says who answered and how. A click on a gate that has moved on is refused, and only
 the person who clicked sees why: the first answer wins.
 
@@ -22,21 +22,21 @@ the webhook keeps only the budget warnings and run endings.
 
 ## How it runs
 
-Two processes, both started by Swarmify with the package's Setup values:
+Two processes, both started by Kriflow with the package's Setup values:
 
-- `slack_connector.py`, the stdio MCP server Swarmify calls per gate: `post_gate` and
+- `slack_connector.py`, the stdio MCP server Kriflow calls per gate: `post_gate` and
   `update_gate`, plus `check_setup`, the Setup test.
 - `slack_connector.py listen`, the Manifest's `listen` command: a Bolt app in Socket Mode, an
-  outbound websocket to Slack, so Swarmify needs no public URL. Swarmify keeps it running while a
+  outbound websocket to Slack, so Kriflow needs no public URL. Kriflow keeps it running while a
   world enables the package with its Setup done (restarting it within 15 seconds if it exits) and
-  gives it `SWARMIFY_MCP_URL` and `SWARMIFY_API_TOKEN`: a token Swarmify makes for it, which
+  gives it `KRIFLOW_MCP_URL` and `KRIFLOW_API_TOKEN`: a token Kriflow makes for it, which
   reaches only `/mcp/remote_approvals`, where a click answers its gate as `<name> in Slack`, and
   a thread reply asks the run's assistant (`ask_run`, `apply_proposal`, `dismiss_proposal`). The
   token is listed under Settings, API tokens, as "slack remote approvals"; it is replaced on each
-  start of Swarmify.
+  start of Kriflow.
 
-`SWARMIFY_MCP_URL` is built from `SWARMIFY_BASE_URL`, so that address must reach the API from
-where Swarmify runs (it does by default, `http://localhost:8000`).
+`KRIFLOW_MCP_URL` is built from `KRIFLOW_BASE_URL`, so that address must reach the API from
+where Kriflow runs (it does by default, `http://localhost:8000`).
 
 ## Setup
 

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from kriflow_connectors.fake import default_list
-from kriflow_connectors.packages import MANIFEST
+from kriflow_connectors.packages import MANIFEST, NEW_MANIFEST
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -19,7 +19,7 @@ def own_default_list(
     request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[None]:
     folder = Path(request.path).parent
-    if not (folder / MANIFEST).is_file():
+    if not any((folder / name).is_file() for name in (NEW_MANIFEST, MANIFEST)):
         yield
         return
     listed = default_list(tmp_path_factory.mktemp("default-list"), {folder.name: folder})

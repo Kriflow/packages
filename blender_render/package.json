@@ -1,5 +1,5 @@
 {
-  "name": "swarmify-blender-render",
+  "name": "kriflow-blender-render",
   "private": true,
   "description": "The install step's downloads, Blender and ffmpeg (fetch.py), run as npm run fetch",
   "scripts": {

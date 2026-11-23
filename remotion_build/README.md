@@ -2,9 +2,9 @@
 
 The Remotion build connector: one sandboxed coding session writes a Remotion project for the
 run's script, then the remotion_render package's own render, not the agent, turns it into the
-stage's video. It is a Connector Package (ADR 0019) and one of Swarmify's default packages, so
-workflows call `remotion_build` exactly as before. Everything Swarmify knows of it is
-`swarmify-connector.toml`: it requests a Build Session (see Build Sessions in Swarmify's README,
+stage's video. It is a Connector Package (ADR 0019) and one of Kriflow's default packages, so
+workflows call `remotion_build` exactly as before. Everything Kriflow knows of it is
+`swarmify-connector.toml`: it requests a Build Session (see Build Sessions in Kriflow's README,
 which covers the session, its sandbox, its budget and revisions after a send-back) and has no
 server of its own.
 
@@ -63,7 +63,7 @@ into `public/`, take the composition's length from the voice timeline, play each
 carries a sample composition doing all of it, which a test type-checks in the starter.
 
 The render executes the agent's code (its `remotion.config.ts`, its `node_modules`), in the
-remotion_render package's connector sandbox (ADR 0021, Swarmify's README): no network beyond its
+remotion_render package's connector sandbox (ADR 0021, Kriflow's README): no network beyond its
 own loopback (fonts and images must be files in `public/`, which the builder is told), nothing of
 the data directory readable but that package, the world's Templates and the run's folders, and
 nothing writable but the stage's folder. It never installs: a build that left no `node_modules` fails.
@@ -72,6 +72,6 @@ Chrome Headless Shell is the one the remotion_render package's install step down
 
 Tests drive the builder with the scripted CLI and the render with a fake `npx` inside the real
 connector sandbox. One real build, on your subscription and the real Remotion CLI, runs when you opt in:
-`SWARMIFY_REAL_BUILD=1 uv run pytest apps/api/tests/test_build_http.py -k real -s` (about a
+`KRIFLOW_REAL_BUILD=1 uv run pytest apps/api/tests/test_build_http.py -k real -s` (about a
 minute on a Mac, most of it the first pnpm install and the Chrome download).
 

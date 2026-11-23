@@ -1,7 +1,7 @@
-# The Blender render connector's own uv project, outside the Swarmify workspace: its install step
+# The Blender render connector's own uv project, outside the Kriflow workspace: its install step
 # syncs these into the installed version's folder (ADR 0026).
 [project]
-name = "swarmify-blender-render"
+name = "kriflow-blender-render"
 version = "1.0.0"
 description = "Renders a Blender project's shots into one video"
 requires-python = ">=3.12"

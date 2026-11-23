@@ -40,6 +40,8 @@ from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
 from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
+VERSION = read_manifest(HERE)["version"]
+"""The version this folder releases, so a release never reddens its own tests."""
 W = "w"
 Given = Callable[..., Connectors]
 RUN = Path("worlds") / W / "runs" / "run_1"
@@ -57,7 +59,7 @@ def registry(data: Path, transport: Any) -> Connectors:
 
 @pytest.fixture(scope="module")
 def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One install for the module, as Swarmify does at startup: installed, not a default."""
+    """One install for the module, as Kriflow does at startup: installed, not a default."""
     data = tmp_path_factory.mktemp("data")
     defaults = registry(data, FakeTransport()).install_defaults()
     assert "blender_render" not in defaults
@@ -72,7 +74,7 @@ def given(installed: Path, tmp_path: Path) -> Given:
         connectors = registry(data, transport)
         connectors.install_defaults()  # installed already: only remembered
         connectors.offer_defaults(W)
-        connectors.enable(W, "blender_render", "1.0.8")
+        connectors.enable(W, "blender_render", VERSION)
         return connectors
 
     return make
@@ -186,7 +188,7 @@ def test_the_manifest_passes_off_by_default_on_the_gpu_with_no_network() -> None
 
 
 def test_install_syncs_its_python_then_fetches_blender_and_ffmpeg(installed: Path) -> None:
-    folder = installed / "blender_render" / "1.0.8"
+    folder = installed / "blender_render" / VERSION
     assert (folder / ".venv" / "bin" / "python").exists()
     assert (folder / "fake-install.log").read_text() == "npm run fetch --silent\n"
 
@@ -340,7 +342,7 @@ def test_a_finish_step_makes_the_video_with_the_documented_environment(
     assert connectors.run_stage(W, "run_1", "stage_2", config).status == "done"
     output = Path(config["params"]["output_path"])
     made = json.loads(output.read_text())
-    package = tmp_path / "packages" / "blender_render" / "1.0.8"
+    package = tmp_path / "packages" / "blender_render" / VERSION
     assert {k: v for k, v in made.items() if k.startswith("BLENDER_")} == {
         "BLENDER_PROJECT": str(project),
         "BLENDER_ASSETS": str(tmp_path / "worlds" / W / "assets"),
@@ -698,14 +700,14 @@ def test_stills_that_cannot_make_a_sheet_say_why(
 def test_a_render_takes_a_gpu_slot_and_its_wait_names_its_run(
     tmp_path: Path, path_tools: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Swarmify's Resources (ADR 0030): another process holding the gpu's one Slot, the render
+    """Kriflow's Resources (ADR 0030): another process holding the gpu's one Slot, the render
     waits, saying so, with a waiting note naming its run and stage; then it holds the Slot."""
     gpu = tmp_path / "resources" / "gpu"
     (gpu / "waiting").mkdir(parents=True)
-    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU", str(gpu))
-    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU_SLOTS", "1")
-    monkeypatch.setenv("SWARMIFY_RUN_ID", "run_7")
-    monkeypatch.setenv("SWARMIFY_STAGE_ID", "stage_2")
+    monkeypatch.setenv("KRIFLOW_RESOURCE_GPU", str(gpu))
+    monkeypatch.setenv("KRIFLOW_RESOURCE_GPU_SLOTS", "1")
+    monkeypatch.setenv("KRIFLOW_RUN_ID", "run_7")
+    monkeypatch.setenv("KRIFLOW_STAGE_ID", "stage_2")
     monkeypatch.delenv("SWARMIFY_GPU_LOCK", raising=False)
     params = stage(tmp_path, make_project(tmp_path / "p"))["params"]
     with open(gpu / "0.lock", "a") as held:

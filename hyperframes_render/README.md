@@ -5,14 +5,14 @@ renders a script artifact through a HyperFrames project (HTML, CSS and a GSAP ti
 video. It is a Connector Package (ADR 0019) installed with Kriflow from its release tag here into
 `<data dir>/packages/hyperframes_render/<version>/`, but **not enabled by default**
 (`enable_by_default = false`): Remotion stays a world's video engine until its operator enables
-this package on the Connectors page. Everything Swarmify knows of it is `swarmify-connector.toml`.
+this package on the Connectors page. Everything Kriflow knows of it is `swarmify-connector.toml`.
 
 Its install step (ADR 0026) puts beside it its Python (`uv sync`: the MCP SDK), the HyperFrames
 CLI (`npm ci` from `package-lock.json`, 0.9.0, which needs Node 22), ffmpeg and ffprobe
 (`npm run ffmpeg`, below) and the Chrome Headless Shell HyperFrames downloads for it
 (`hyperframes browser ensure --force`, into `node_modules/.hyperframes`), about 450 MB, reaching
 only its Manifest's `install_network`. Every render uses that browser and those binaries, so a
-render needs nothing of Swarmify's image but Node and, in Docker, Chrome's shared libraries. When
+render needs nothing of Kriflow's image but Node and, in Docker, Chrome's shared libraries. When
 one is missing (an install from a copy without `node_modules`) a `chrome-headless-shell`, `ffmpeg`
 or `ffprobe` on `PATH` is used instead, else the render fails saying to reinstall the package: a
 render cannot download one.
@@ -59,7 +59,7 @@ The composition gets the script as variables, `{...variables, "script": <text>, 
 <path>}`, through a variables file (`--variables-file`); read them with
 `window.__hyperframes.getVariables()`. `hyperframes_render` answers with a long job and runs the
 render in a process of its own, which the stage polls with `hyperframes_render_status` in the same
-session, and which outlives a restart of Swarmify, whose stage then resumes polling it. A repeated
+session, and which outlives a restart of Kriflow, whose stage then resumes polling it. A repeated
 call with the same idempotency key attaches to the running render. Progress comes from the CLI's
 `@hf-progress` lines and shows on the timeline as a percentage and a phase (compiling, capturing
 frames 120/300, encoding). On success the video gets a sidecar, `video.mp4.md`, with frontmatter
@@ -106,9 +106,9 @@ neither fails the render.
 
 ## In Docker
 
-Swarmify's image carries Node 22 and the shared libraries and fonts Chrome needs, not HyperFrames,
+Kriflow's image carries Node 22 and the shared libraries and fonts Chrome needs, not HyperFrames,
 Chrome or ffmpeg: this package's install step puts them in `/data/packages`. Renders run in the
-`sandbox` service (Swarmify's README, Deployment), which mounts the volume's `worlds/` folder,
+`sandbox` service (Kriflow's README, Deployment), which mounts the volume's `worlds/` folder,
 where each world's Templates are, so an uploaded Template renders there as natively. Set **Render workers** to 1 or 2 on a small Docker Desktop VM (above). On Linux
 arm64 HyperFrames has no Chrome Headless Shell to download (it would `apt-get install chromium`),
 so there the install step skips it and a render needs a `chrome-headless-shell` on `PATH`, else it
@@ -133,4 +133,4 @@ outside its stage or into a Template and reach the internet is refused each time
 logged. One
 real install and render runs when you opt in, with a HyperFrames project whose `node_modules` are
 installed (it is copied into a run's folder, where a build would have written it):
-`SWARMIFY_REAL_BUILD=1 SWARMIFY_HYPERFRAMES_PROJECT=<project> uv run pytest --no-cov connectors/hyperframes_render -k real_render -s` in a core checkout that `tools/test_packages.sh <core> hyperframes_render` has filled.
+`KRIFLOW_REAL_BUILD=1 KRIFLOW_HYPERFRAMES_PROJECT=<project> uv run pytest --no-cov connectors/hyperframes_render -k real_render -s` in a core checkout that `tools/test_packages.sh <core> hyperframes_render` has filled.

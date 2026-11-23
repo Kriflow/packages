@@ -5,7 +5,7 @@ GPU, runs the project's own finish step and writes the stage's video (ADR 0015).
 Package (ADR 0019) installed with Kriflow from its release tag here into
 `<data dir>/packages/blender_render/<version>/`, but **not enabled by default**
 (`enable_by_default = false`): a world enables it on the Connectors page, with `blender_build`,
-when it makes videos in Blender. Everything Swarmify knows of it is `swarmify-connector.toml`.
+when it makes videos in Blender. Everything Kriflow knows of it is `kriflow-connector.toml`.
 
 Its install step (ADR 0026) puts beside it its Python (`uv sync`: the MCP SDK and Pillow, for
 contact sheets), then runs `fetch.py` (as `npm run fetch`, so the test suite's npm, which only
@@ -193,11 +193,11 @@ does not offer. Measured on the box (2026-11-06): eight 1080x1920 EEVEE stills t
 ## GPU
 
 `permissions.gpu = true`: the sandbox binds the host's GPU device files and hands the process the
-gpu Resource's Slots (`SWARMIFY_RESOURCE_GPU`, Swarmify ADR 0030). Each Blender process holds a
+gpu Resource's Slots (`KRIFLOW_RESOURCE_GPU`, Kriflow ADR 0030). Each Blender process holds a
 Slot while it runs (an exclusive `flock`; while none is free it logs `Waiting for the GPU`, leaves
 a waiting note naming its run and stage, and tries again every half second), so a render, a
 build's stills, a Remotion GPU render and a Chatterbox voice never share the card at once. An
-older Swarmify hands only `SWARMIFY_GPU_LOCK`, which it then holds instead; with neither it runs
+older Kriflow hands only `SWARMIFY_GPU_LOCK`, which it then holds instead; with neither it runs
 unlocked.
 
 Blender needs nothing more on the GPU: with the sandbox's binds its `gpu.platform` reports NVIDIA

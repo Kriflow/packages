@@ -1,7 +1,7 @@
-# The Slack connector's own uv project, outside the Swarmify workspace: its install step syncs
+# The Slack connector's own uv project, outside the Kriflow workspace: its install step syncs
 # these into the installed version's folder (ADR 0026).
 [project]
-name = "swarmify-slack"
+name = "kriflow-slack"
 version = "1.0.0"
 description = "Remote Approvals in Slack: gates posted with buttons, answered over Socket Mode"
 requires-python = ">=3.12"

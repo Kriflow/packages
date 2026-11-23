@@ -5,8 +5,8 @@ CSS and a GSAP timeline) for the run's script, then the hyperframes_render packa
 not the agent, turns it into the stage's video. It is a Connector Package (ADR 0019) installed
 with Kriflow from its release tag here but **not enabled by default** (`enable_by_default = false`):
 Remotion stays a world's video engine until its operator enables this package and
-hyperframes_render on the Connectors page. Everything Swarmify knows of it is
-`swarmify-connector.toml`: it requests a Build Session (see Build Sessions in Swarmify's README,
+hyperframes_render on the Connectors page. Everything Kriflow knows of it is
+`swarmify-connector.toml`: it requests a Build Session (see Build Sessions in Kriflow's README,
 which covers the session, its sandbox, its budget and revisions after a send-back) and has no
 server of its own.
 
@@ -89,4 +89,4 @@ Tests drive the builder with the scripted CLI and the render with a fake HyperFr
 the real connector sandbox; `test_hyperframes_build.py` runs HyperFrames' own linter on the
 starter when npm is here. One real build, on your subscription and the real HyperFrames CLI, runs
 when you opt in:
-`SWARMIFY_REAL_BUILD=1 uv run pytest apps/api/tests/test_build_http.py -k real_hyperframes -s`.
+`KRIFLOW_REAL_BUILD=1 uv run pytest apps/api/tests/test_build_http.py -k real_hyperframes -s`.

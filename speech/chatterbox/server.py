@@ -1,4 +1,4 @@
-"""Chatterbox speech and faster-whisper word times over HTTP, for Swarmify's speech connector.
+"""Chatterbox speech and faster-whisper word times over HTTP, for Kriflow's speech connector.
 
 POST /v1/audio/speech  OpenAI-style JSON {"input", "voice", "response_format": "wav", "seed"}: a WAV
                        (16-bit). The same fields as a multipart form with a `reference` file (5

@@ -14,8 +14,9 @@ tools/          the repository's check tool and test runner
 tests/          tests of the index and the check tool
 ```
 
-Each folder is one package, named exactly as the `name` in its `swarmify-connector.toml` (its
-Manifest), with its own README, its tests and its version. `python_script` stays in the core.
+Each folder is one package, named exactly as the `name` in its Manifest, with its own README, its
+tests and its version. The Manifest is `kriflow-connector.toml`, or `swarmify-connector.toml` in a
+package not released since the rename (see Names kept from Swarmify). `python_script` stays in the core.
 The packages' history before the move is kept: it was imported from the core's `connectors/`.
 
 ## Releases
@@ -49,13 +50,13 @@ contract number and what it added. An index entry carries the same `contract`.
 
 ## The index format
 
-Kriflow reads `index.toml` from `SWARMIFY_CONNECTOR_INDEX`, by default this repository's raw
+Kriflow reads `index.toml` from `KRIFLOW_CONNECTOR_INDEX` (or the old `SWARMIFY_CONNECTOR_INDEX`), by default this repository's raw
 `main/index.toml`. Point that setting at your own fork, over https, or at a local file to run a
 private index. One `[[packages]]` table per package:
 
 ```toml
 [[packages]]
-name = "speech"                      # the `name` in the package's swarmify-connector.toml
+name = "speech"                      # the `name` in the package's Manifest
 description = "Voices a script, one take per scene."  # one or two plain sentences
 git = "https://github.com/you/your-connector.git"     # public, https, no credentials in it
 subfolder = "speech"                 # optional: where the package is when not at the root
@@ -130,6 +131,26 @@ python tools/check.py                        # the bump, index and help_url rule
 pytest there, as the tests ran before the move. CI does the same on every pull request (the
 changed packages), nightly (all of them) and before tagging a release. Real-network and real
 render tests stay opt-in, as each package's README says.
+
+## Names kept from Swarmify
+
+Kriflow was called Swarmify until 2026-11-22 (Kriflow/kriflow#565). Code and docs here say
+Kriflow; what a deployed install or stored data reads by the old name keeps it:
+
+- **Manifest file name.** Kriflow reads `kriflow-connector.toml`, else `swarmify-connector.toml`
+  (package contract 3; a folder with both is refused). Tags are frozen, so a package keeps
+  `swarmify-connector.toml` until its next release for its own reasons; that release renames the
+  file and declares `contract = 3`. Renaming every package at once would release every package
+  for nothing (Kriflow/packages#7). `tools/check.py` and `tools/test_packages.sh` find either.
+- **Variables the core gives a package process** (`KRIFLOW_RUN_ID`, `_STAGE_DIR`, `_ASSETS`,
+  `_RESOURCE_<NAME>`, `_GPU_LOCK`, `_MCP_URL`, `_API_TOKEN`, `_LOGIN_*`): the core sets both
+  prefixes forever. Released packages read `KRIFLOW_*` first and fall back to `SWARMIFY_*`.
+- **A package's own Setting names** (`SWARMIFY_BLENDER_VERSION`, `SWARMIFY_RENDER_CONCURRENCY`,
+  `SWARMIFY_HYPERFRAMES_WORKERS`): the package's own, kept.
+- **Stored or wired names**: the speech engines' compose project `swarmify-speech`, its volume
+  `swarmify_speech-models` and the core's network `swarmify`; the Slack package's action ids
+  `swarmify_*` (on messages already posted); YouTube's upload tags `swarmify-<key>` (how a retried
+  upload finds the video it already made).
 
 ## License
 

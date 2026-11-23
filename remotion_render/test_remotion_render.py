@@ -2,7 +2,7 @@
 suite's fake `npm` and `npx`), given to a world as a default, started over stdio MCP in the
 connector sandbox and rendering with a fake Remotion CLI as the project's own (`fake_npx.py`),
 its project one of the world's Templates (ADR 0028) or a build folder of the run.
-`SWARMIFY_REMOTION_PROJECT` opts in to one real render."""
+`KRIFLOW_REMOTION_PROJECT` opts in to one real render."""
 
 import fcntl
 import json
@@ -38,6 +38,8 @@ from kriflow_kernel.events import read_after
 from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
+VERSION = read_manifest(HERE)["version"]
+"""The version this folder releases, so a release never reddens its own tests."""
 W = "w"
 Given = Callable[..., Connectors]
 
@@ -53,11 +55,11 @@ def registry(data: Path, transport: Any) -> Connectors:
 
 @pytest.fixture(scope="module")
 def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One install for the module, as Swarmify does at startup: copied to the packages folder,
+    """One install for the module, as Kriflow does at startup: copied to the packages folder,
     `uv sync`ed there, then the (fake) npm and Remotion browser steps."""
     data = tmp_path_factory.mktemp("data")
     defaults = registry(data, FakeTransport()).install_defaults()
-    assert defaults["remotion_render"] == "1.0.10"
+    assert defaults["remotion_render"] == VERSION
     return data / "packages"
 
 
@@ -85,7 +87,7 @@ def real(given: Given) -> Connectors:
 @pytest.fixture
 def fake_npx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A ready Template of world `w`, its dependencies installed: a fake Remotion CLI
-    (`fake_npx.py`) as its own. A Chrome Headless Shell goes on PATH, as Swarmify's image has
+    (`fake_npx.py`) as its own. A Chrome Headless Shell goes on PATH, as Kriflow's image has
     one."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -153,7 +155,7 @@ def test_the_manifest_passes_and_shares_remotion_builds_templates() -> None:
 def test_install_puts_its_python_the_remotion_cli_and_its_browser_beside_it(
     installed: Path,
 ) -> None:
-    folder = installed / "remotion_render" / "1.0.10"
+    folder = installed / "remotion_render" / VERSION
     assert (folder / ".venv" / "bin" / "python").is_file()
     assert (folder / "fake-install.log").read_text().splitlines() == [
         "npm ci --ignore-scripts --no-audit --no-fund",
@@ -166,7 +168,7 @@ def test_its_settings_reach_the_process_and_no_templates_folder_is_one(given: Gi
     """Its Templates are the world's (ADR 0028), not a folder of the data directory."""
     connectors = given(FakeTransport())
     render = connectors.find(W, "remotion_render")
-    assert render is not None and render.version == "1.0.10"
+    assert render is not None and render.version == VERSION
     assert connectors._env(render) == {}
     connectors.save_setup(W, "remotion_render", {}, {"concurrency": "2"})
     assert connectors._env(render) == {"SWARMIFY_RENDER_CONCURRENCY": "2"}
@@ -244,7 +246,7 @@ def test_renders_the_script_into_a_video_with_a_sidecar(
 @pytest.fixture
 def own_browser(installed: Path) -> Iterator[Path]:
     """What `remotion browser ensure` leaves beside the installed package, for one test."""
-    browsers = installed / "remotion_render" / "1.0.10" / "node_modules" / ".remotion"
+    browsers = installed / "remotion_render" / VERSION / "node_modules" / ".remotion"
     shell = browsers / "chrome-headless-shell" / "linux64" / "chrome-headless-shell"
     shell.parent.mkdir(parents=True)
     shell.write_text("#!/bin/sh\n")
@@ -256,7 +258,7 @@ def own_browser(installed: Path) -> Iterator[Path]:
 def test_its_own_browser_is_the_one_remotion_uses_else_one_on_path(
     tmp_path: Path, real: Connectors, fake_npx: Path, request: pytest.FixtureRequest
 ) -> None:
-    shell = tmp_path / "bin" / "chrome-headless-shell"  # as Swarmify's image has
+    shell = tmp_path / "bin" / "chrome-headless-shell"  # as Kriflow's image has
     config = stage(tmp_path, fake_npx)
     real.run_stage(W, "run_1", "stage_2", config)
     assert rendered(config)["browser"] == str(shell)
@@ -415,13 +417,13 @@ def test_each_gpu_chunk_waits_for_the_shared_gpu_lock_and_says_so(
 def test_each_gpu_chunk_takes_a_gpu_slot_and_says_while_it_waits(
     tmp_path: Path, fake_npx: Path, gpu: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Swarmify's Resources (ADR 0030): with the gpu's Slots named, a chunk waits for a free one,
+    """Kriflow's Resources (ADR 0030): with the gpu's Slots named, a chunk waits for a free one,
     saying so and leaving a waiting note with its run, then renders."""
     slots = tmp_path / "resources" / "gpu"
     (slots / "waiting").mkdir(parents=True)
-    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU", str(slots))
-    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU_SLOTS", "1")
-    monkeypatch.setenv("SWARMIFY_RUN_ID", "run_7")
+    monkeypatch.setenv("KRIFLOW_RESOURCE_GPU", str(slots))
+    monkeypatch.setenv("KRIFLOW_RESOURCE_GPU_SLOTS", "1")
+    monkeypatch.setenv("KRIFLOW_RUN_ID", "run_7")
     monkeypatch.delenv("SWARMIFY_GPU_LOCK", raising=False)
     params = stage(tmp_path, fake_npx)["params"]
     with open(slots / "0.lock", "a") as held:
@@ -619,13 +621,13 @@ def test_a_repeated_call_attaches_to_the_render_instead_of_starting_another(
 
 
 @pytest.mark.skipif(
-    not os.environ.get("SWARMIFY_REMOTION_PROJECT"),
-    reason="set SWARMIFY_REMOTION_PROJECT (and SWARMIFY_REMOTION_COMPOSITION) for a real render",
+    not os.environ.get("KRIFLOW_REMOTION_PROJECT"),
+    reason="set KRIFLOW_REMOTION_PROJECT (and KRIFLOW_REMOTION_COMPOSITION) for a real render",
 )
 def test_a_real_render(tmp_path: Path, real: Connectors) -> None:
     real_project = tmp_path / TEMPLATES / "real"  # a world's Template, where its sandbox reads
-    shutil.copytree(os.environ["SWARMIFY_REMOTION_PROJECT"], real_project, symlinks=True)
-    composition = os.environ.get("SWARMIFY_REMOTION_COMPOSITION", "Main")
+    shutil.copytree(os.environ["KRIFLOW_REMOTION_PROJECT"], real_project, symlinks=True)
+    composition = os.environ.get("KRIFLOW_REMOTION_COMPOSITION", "Main")
     config = stage(tmp_path, real_project, composition, frames="0-9")
     call = real.run_stage(W, "run_1", "stage_2", config)
     video = Path(config["params"]["output_path"])

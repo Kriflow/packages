@@ -4,7 +4,7 @@ As a stdio MCP server it answers the `remote_approvals` Capability the core owns
 posts a gate to the world's channel with a Block Kit button per answer the core offers, and
 `update_gate` replaces the buttons with how the gate closed, wherever it was answered. Run as
 `slack_connector.py listen`, it is the long-lived process the core keeps running: a Bolt app in
-Socket Mode (an outbound websocket, so Swarmify needs no public URL) that takes each button
+Socket Mode (an outbound websocket, so Kriflow needs no public URL) that takes each button
 click and answers the gate through the core's MCP server, with the token the core gave it, as
 the Slack user who clicked. A reply in a gate's thread is a turn of the run's Run Assistant (the
 `run_assistant` Capability), its answer posted back in the thread with Apply and Not now on each
@@ -26,6 +26,8 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import MCPServer
 from mcp.shared._httpx_utils import create_mcp_http_client
 
+# Kept from Swarmify on purpose: buttons and gate metadata on messages already posted carry these
+# ids, and a click on an old message must still be understood.
 ACTION = "swarmify_answer"
 APPLY, NOT_NOW = "swarmify_apply", "swarmify_not_now"
 GATE = "swarmify_gate"
@@ -144,18 +146,22 @@ def answer(body: dict[str, Any], decide: Callable[[dict[str, Any]], str | None])
     return decide({**arguments, "by": f"{_who(body)} in Slack", **value["decide"]})
 
 
+def _env(suffix: str) -> str:
+    """A variable the core gives this process: `KRIFLOW_<suffix>`, else `SWARMIFY_<suffix>`, which
+    cores from before the rename give alone (Kriflow/kriflow#595 sets both). Raises KeyError."""
+    return os.environ.get(f"KRIFLOW_{suffix}") or os.environ[f"SWARMIFY_{suffix}"]
+
+
 def core(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Call a tool on the core's MCP server and answer what it returned. Raises Refused."""
-    headers = {"Authorization": f"Bearer {os.environ['SWARMIFY_API_TOKEN']}"}
+    headers = {"Authorization": f"Bearer {_env('API_TOKEN')}"}
 
     async def go() -> tuple[dict[str, Any], str | None]:
         async with (
             create_mcp_http_client(headers=headers) as http,
-            Client(
-                streamable_http_client(os.environ["SWARMIFY_MCP_URL"], http_client=http)
-            ) as swarmify,
+            Client(streamable_http_client(_env("MCP_URL"), http_client=http)) as kriflow,
         ):
-            result = await swarmify.call_tool(tool, arguments)
+            result = await kriflow.call_tool(tool, arguments)
             said = "\n".join(getattr(b, "text", "") for b in result.content).strip()
             said = said.removeprefix(f"Error executing tool {tool}: ")
             refused = (said or "Kriflow refused it.") if result.is_error else None

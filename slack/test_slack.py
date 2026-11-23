@@ -19,13 +19,14 @@ from fastapi import FastAPI
 
 from kriflow_api.auth import Operator
 from kriflow_api.main import create_app
-from kriflow_connectors import Connector, FakeTransport, McpTransport
+from kriflow_connectors import Connector, FakeTransport, McpTransport, read_manifest
 from kriflow_notifications.fake import FakeSlack as FakeWebhook
 from kriflow_swarm import SdkRuntime, tool_id
 from kriflow_swarm.fake import Answer, Call, Script
 
 PASSWORD = "correct horse"
 CHANNEL = "C0123ABCDEF"
+VERSION = read_manifest(Path(__file__).parent)["version"]
 DRAFT = """name: Draft
 stages:
   - connector: draft
@@ -259,8 +260,8 @@ def slack(monkeypatch: pytest.MonkeyPatch) -> FakeSlack:
     fake = FakeSlack()
     monkeypatch.setattr(sc, "web", lambda *_: fake)
     monkeypatch.setenv("SLACK_CHANNEL", CHANNEL)
-    monkeypatch.setenv("SWARMIFY_PASSWORD", PASSWORD)
-    monkeypatch.setenv("SWARMIFY_BASE_URL", "http://swarmify.lan")
+    monkeypatch.setenv("KRIFLOW_PASSWORD", PASSWORD)
+    monkeypatch.setenv("KRIFLOW_BASE_URL", "http://swarmify.lan")
     return fake
 
 
@@ -292,7 +293,7 @@ def test_slack_and_the_web_ui_answer_gates_alike_and_both_update_the_message(
         assert http.post(f"/api/runs/{first}/abort").status_code == 200
 
         assert "slack" not in http.get(f"/api/worlds/{world}/packages").json()  # not by default
-        enabled = http.put(f"/api/worlds/{world}/packages/slack", json={"version": "1.1.3"})
+        enabled = http.put(f"/api/worlds/{world}/packages/slack", json={"version": VERSION})
         assert enabled.status_code == 200
         setup = {
             "shared": {"bot_token": "xoxb-1", "app_token": "xapp-1"},
@@ -311,8 +312,8 @@ def test_slack_and_the_web_ui_answer_gates_alike_and_both_update_the_message(
 
         # The connector answers with the token the core provisions for its process.
         token = Operator(tmp_path / "swarmify.db").provision("slack", "remote_approvals")
-        monkeypatch.setenv("SWARMIFY_API_TOKEN", token)
-        monkeypatch.setenv("SWARMIFY_MCP_URL", f"{url}/mcp/remote_approvals")
+        monkeypatch.setenv("KRIFLOW_API_TOKEN", token)
+        monkeypatch.setenv("KRIFLOW_MCP_URL", f"{url}/mcp/remote_approvals")
         whole = {"Authorization": f"Bearer {token}"}
         assert httpx.post(f"{url}/mcp", headers=whole, json={}).status_code == 401  # scoped
 
@@ -333,7 +334,7 @@ def test_slack_and_the_web_ui_answer_gates_alike_and_both_update_the_message(
         assert not any("waiting on you" in t for t in webhook.texts()[hooked:])
 
     # The package came through the real install path, and its server starts over stdio.
-    folder = tmp_path / "packages/slack/1.1.3"
+    folder = tmp_path / "packages" / "slack" / VERSION
     package = Connector(
         "slack", world, "slack", "notify", [".venv/bin/python", "slack_connector.py"],
         folder=str(folder),
@@ -358,8 +359,8 @@ def test_a_thread_reply_reaches_the_runs_assistant_and_slack_applies_its_proposa
         http.post(f"/api/worlds/{world}/connectors", json=studio).raise_for_status()
         wf = http.post(f"/api/worlds/{world}/workflows", json={"yaml": DRAFT}).json()
         token = Operator(tmp_path / "swarmify.db").provision("slack", "remote_approvals")
-        monkeypatch.setenv("SWARMIFY_API_TOKEN", token)
-        monkeypatch.setenv("SWARMIFY_MCP_URL", f"{url}/mcp/remote_approvals")
+        monkeypatch.setenv("KRIFLOW_API_TOKEN", token)
+        monkeypatch.setenv("KRIFLOW_MCP_URL", f"{url}/mcp/remote_approvals")
 
         def ask(run_id: str) -> None:
             sc.core("ask_run", {"run_id": run_id, "message": "hi"})
@@ -370,7 +371,7 @@ def test_a_thread_reply_reaches_the_runs_assistant_and_slack_applies_its_proposa
             ask(unhooked)
         http.post(f"/api/runs/{unhooked}/abort").raise_for_status()
 
-        http.put(f"/api/worlds/{world}/packages/slack", json={"version": "1.1.3"})
+        http.put(f"/api/worlds/{world}/packages/slack", json={"version": VERSION})
         setup = {"shared": {"bot_token": "xoxb-1", "app_token": "xapp-1"}}
         setup["world"] = {"channel": CHANNEL}
         assert http.put(f"/api/worlds/{world}/packages/slack/setup", json=setup).is_success

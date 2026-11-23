@@ -2,7 +2,7 @@
 the suite's fake `npm` and `npx`), enabled for a world, started over stdio MCP in the connector
 sandbox and rendering with a fake HyperFrames CLI as the project's own (`fake_hyperframes.py`),
 its project one of the world's Templates (ADR 0028) or a build folder of the run.
-`SWARMIFY_REAL_BUILD=1` with `SWARMIFY_HYPERFRAMES_PROJECT` opts in to one real install and
+`KRIFLOW_REAL_BUILD=1` with `KRIFLOW_HYPERFRAMES_PROJECT` opts in to one real install and
 render."""
 
 import json
@@ -35,6 +35,8 @@ from kriflow_kernel.events import read_after
 from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
+VERSION = read_manifest(HERE)["version"]
+"""The version this folder releases, so a release never reddens its own tests."""
 W = "w"
 Given = Callable[..., Connectors]
 TOOLS = ("chrome-headless-shell", "ffmpeg", "ffprobe")
@@ -52,13 +54,13 @@ def registry(data: Path, transport: Any) -> Connectors:
 
 @pytest.fixture(scope="module")
 def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One install for the module, as Swarmify does at startup: copied to the packages folder,
+    """One install for the module, as Kriflow does at startup: copied to the packages folder,
     `uv sync`ed there, then the (fake) npm, ffmpeg and HyperFrames browser steps. It is
     installed but not a default: Remotion stays the engine a world has until it asks."""
     data = tmp_path_factory.mktemp("data")
     defaults = registry(data, FakeTransport()).install_defaults()
     assert "hyperframes_render" not in defaults
-    assert (data / "packages" / "hyperframes_render" / "1.0.3").is_dir()
+    assert (data / "packages" / "hyperframes_render" / VERSION).is_dir()
     return data / "packages"
 
 
@@ -73,7 +75,7 @@ def given(installed: Path, tmp_path: Path) -> Given:
         connectors = registry(data, transport)
         connectors.install_defaults()  # installed already: only remembered
         connectors.offer_defaults(W)
-        connectors.enable(W, "hyperframes_render", "1.0.3")
+        connectors.enable(W, "hyperframes_render", VERSION)
         return connectors
 
     return make
@@ -199,7 +201,7 @@ def test_the_manifest_passes_off_by_default_reaching_only_its_loopback() -> None
 def test_install_puts_its_python_the_hyperframes_cli_its_browser_and_ffmpeg_beside_it(
     installed: Path,
 ) -> None:
-    folder = installed / "hyperframes_render" / "1.0.3"
+    folder = installed / "hyperframes_render" / VERSION
     assert (folder / ".venv" / "bin" / "python").is_file()
     log = (folder / "fake-install.log").read_text().splitlines()
     assert log[0] == "npm ci --ignore-scripts --no-audit --no-fund"
@@ -222,7 +224,7 @@ def test_a_platform_without_a_chrome_to_download_still_installs_it(
         lambda: {**before(), "PATH": f"{failing}{os.pathsep}{before()['PATH']}"},
     )
     registry(tmp_path, FakeTransport()).install_defaults()
-    folder = tmp_path / "packages" / "hyperframes_render" / "1.0.3"
+    folder = tmp_path / "packages" / "hyperframes_render" / VERSION
     assert (folder / "fake-install.log").read_text().splitlines()[-1].startswith("npx --no")
 
 
@@ -232,7 +234,7 @@ def test_a_world_has_it_only_once_its_operator_enables_it(installed: Path, tmp_p
     connectors.install_defaults()
     connectors.offer_defaults(W)
     assert connectors.find(W, "hyperframes_render") is None
-    connectors.enable(W, "hyperframes_render", "1.0.3")
+    connectors.enable(W, "hyperframes_render", VERSION)
     assert connectors.find(W, "hyperframes_render") is not None
 
 
@@ -337,7 +339,7 @@ def test_telemetry_and_update_checks_are_off_and_its_cache_is_in_the_scratch_fol
 def own_tools(installed: Path) -> Iterator[dict[str, Path]]:
     """What the install step leaves beside the installed package, for one test: `browser
     ensure`'s Chrome Headless Shell in its cache, and `npm run ffmpeg`'s ffmpeg and ffprobe."""
-    modules = installed / "hyperframes_render" / "1.0.3" / "node_modules"
+    modules = installed / "hyperframes_render" / VERSION / "node_modules"
     shell = "chrome/chrome-headless-shell/linux-148/chrome-headless-shell-linux64"
     tools = {
         "HYPERFRAMES_BROWSER_PATH": modules / ".hyperframes" / shell / "chrome-headless-shell",
@@ -569,8 +571,8 @@ def test_a_template_renders_in_a_sandbox_that_reads_nothing_else_of_the_world(
 
 
 @pytest.mark.skipif(
-    not (os.environ.get("SWARMIFY_REAL_BUILD") and os.environ.get("SWARMIFY_HYPERFRAMES_PROJECT")),
-    reason="set SWARMIFY_REAL_BUILD=1 and SWARMIFY_HYPERFRAMES_PROJECT for a real render",
+    not (os.environ.get("KRIFLOW_REAL_BUILD") and os.environ.get("KRIFLOW_HYPERFRAMES_PROJECT")),
+    reason="set KRIFLOW_REAL_BUILD=1 and KRIFLOW_HYPERFRAMES_PROJECT for a real render",
 )
 def test_a_real_render(tmp_path: Path, given: Given) -> None:
     """The real install (npm, ffmpeg, Chrome) and a real render of a project with its
@@ -579,7 +581,7 @@ def test_a_real_render(tmp_path: Path, given: Given) -> None:
     blocked: list[str] = []
     connectors.on_blocked = lambda c, at, lines: blocked.extend(lines)
     folder = tmp_path / RUN / "stage_1" / "build"
-    shutil.copytree(os.environ["SWARMIFY_HYPERFRAMES_PROJECT"], folder, symlinks=True)
+    shutil.copytree(os.environ["KRIFLOW_HYPERFRAMES_PROJECT"], folder, symlinks=True)
     config = stage(tmp_path, folder)
     call = connectors.run_stage(W, "run_1", "stage_2", config)
     video = Path(config["params"]["output_path"])

@@ -32,6 +32,8 @@ from kriflow_workflows.parse import parse_workflow
 from kriflow_workflows.validate import validate
 
 HERE = Path(__file__).parent
+VERSION = read_manifest(HERE)["version"]
+"""The version this folder releases, so a release never reddens its own tests."""
 
 
 def page(n: int, instagram: bool = True) -> dict[str, Any]:
@@ -842,7 +844,7 @@ def test_without_a_run_folder_nothing_is_recorded(video: Path, tmp_path: Path) -
     assert sorted(p.name for p in tmp_path.iterdir()) == ["short.mp4"]
 
 
-# The Manifest, and the package installed as Swarmify does at startup
+# The Manifest, and the package installed as Kriflow does at startup
 
 
 # outcomes: views per Platform, for every post with an Instagram or Facebook link
@@ -1050,10 +1052,10 @@ def registry(data: Path) -> Connectors:
 
 def test_the_installed_package_answers_over_stdio_in_its_sandbox(tmp_path: Path) -> None:
     connectors = registry(tmp_path)
-    assert connectors.install_defaults()["meta"] == "1.3.1"
+    assert connectors.install_defaults()["meta"] == VERSION
     connectors.offer_defaults("w")
     found = connectors.find("w", "meta")
-    assert found is not None and found.version == "1.3.1"
+    assert found is not None and found.version == VERSION
     assert sorted(t.name for t in connectors.transport.list_tools(found, {})) == [
         "account",
         "outcomes",

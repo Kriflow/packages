@@ -2,11 +2,11 @@
 
 The speech connector: it voices a script, one take per scene, and writes the word timings and cut
 points a voice-first video is edited on. It is a Connector Package (ADR 0019) and one of
-Swarmify's default packages: on startup Kriflow installs it from its release tag in this repository into
+Kriflow's default packages: on startup Kriflow installs it from its release tag in this repository into
 `<data dir>/packages/speech/<version>/`, where its install step (`uv sync`) puts httpx and the MCP
 SDK beside it (ADR 0026), and enables it for every world that has not decided otherwise, new worlds
-included, so workflows call `speech` exactly as before. Everything Swarmify knows of it is
-`swarmify-connector.toml`.
+included, so workflows call `speech` exactly as before. Everything Kriflow knows of it is
+`kriflow-connector.toml`.
 
 ## Setup
 
@@ -18,7 +18,7 @@ Connectors page, shared by every world or per world.
 A second Setting, **Engines on the GPU** (`gpu_engines`, `SPEECH_GPU_ENGINES`), names which of
 them run on this host's GPU; it defaults to Chatterbox's URLs (`http://localhost:8881`,
 `http://chatterbox:8881`, `http://chatterbox-gpu:8881`). The package declares the `gpu`
-Resource (Swarmify ADR 0030) and holds one of its Slots around each request to such an engine,
+Resource (Kriflow ADR 0030) and holds one of its Slots around each request to such an engine,
 so a voice and a Blender or Remotion render never fight over the card's memory: while a render
 holds it, the request waits, `Waiting for the GPU` in the package's stderr, and the run page
 names who holds it. An engine off the list (Kokoro, a remote one) never waits.
@@ -28,13 +28,13 @@ the package copies a `SPEECH_ENDPOINTS` set in the app's environment into this s
 a Docker deployment whose `.env` set it keeps its engines. After that the Setting is what counts.
 
 The Manifest declares the engines as a Service (`[[services]]`, `engines`, its URLs from the
-Setting), so the Connectors page shows whether each answers `GET /health`. Swarmify never starts
+Setting), so the Connectors page shows whether each answers `GET /health`. Kriflow never starts
 or stops them (ADR 0026): you run them, as below.
 
-## Running the engines beside Swarmify
+## Running the engines beside Kriflow
 
 `compose.yaml` here holds the engines: Kokoro always, Chatterbox on the CPU under the
-`chatterbox` profile, Chatterbox on an NVIDIA GPU under `chatterbox-gpu`. Start Swarmify first
+`chatterbox` profile, Chatterbox on an NVIDIA GPU under `chatterbox-gpu`. Start Kriflow first
 (its compose file names its network `swarmify`, which this one joins), then from the repository
 root:
 
@@ -46,15 +46,15 @@ docker compose -f speech/compose.yaml --profile chatterbox-gpu up -d --build
 From the api container the engines are then `http://kokoro:8880`, `http://chatterbox:8881` or
 `http://chatterbox-gpu:8881`; set the Speech engines Setting to those, the first choice first, as
 `http://chatterbox-gpu:8881,http://kokoro:8880`. Each also listens on `127.0.0.1` of the host
-(8880, 8881) for a native Swarmify and for seeding voices; they have no sign-in, so never bind
+(8880, 8881) for a native Kriflow and for seeding voices; they have no sign-in, so never bind
 them wider. The models volume is `swarmify_speech-models`, the one V1's compose file made, so an
 upgrade keeps the models it downloaded. Updating: `git pull`, then the same command with
 `--build`.
 
-Upgrading from V1, where `kokoro` and the `chatterbox` profiles were in Swarmify's own compose
+Upgrading from V1, where `kokoro` and the `chatterbox` profiles were in Kriflow's own compose
 file: run `docker compose up -d --build --remove-orphans` there once, which stops V1's engines
 (their ports would clash), then start them from this compose file as above. A `SPEECH_ENDPOINTS`
-in Swarmify's `.env` (as `http://chatterbox-gpu:8881,http://kokoro:8880`) is carried into the
+in Kriflow's `.env` (as `http://chatterbox-gpu:8881,http://kokoro:8880`) is carried into the
 Setting on that first start and keeps working, since the engines keep their service names on the
 shared network.
 
@@ -111,9 +111,9 @@ connector tries them in the order its Speech engines Setting (`SPEECH_ENDPOINTS`
 ## The speech connector
 
 `speech` is a stage connector, a plain MCP server (`speech.py`, started as `.venv/bin/python
-speech.py` in its installed folder). Everything Swarmify knows about it (name, kind, stage types,
+speech.py` in its installed folder). Everything Kriflow knows about it (name, kind, stage types,
 its Setup, a JSON schema of its params, inputs, outputs, the `script` type, its Service) is
-`swarmify-connector.toml`; the core never names `speech`.
+`kriflow-connector.toml`; the core never names `speech`.
 
 ```yaml
 - swarm: script
@@ -287,15 +287,15 @@ them:
   `<preset>.wav` in the world's `assets/voices/` and writes its entry, clip and preset both, so
   Chatterbox clones the clip and Kokoro speaks the preset itself and a fallback keeps the voice,
   with consent `synthetic: Kokoro preset <name>, Apache 2.0`. Entries of other names stay. It
-  reads `SWARMIFY_DATA_DIR` like the app.
-- On the world's Assets page the folder is the Voices group (Swarmify's README, Owned Folders on
+  reads `KRIFLOW_DATA_DIR` like the app.
+- On the world's Assets page the folder is the Voices group (Kriflow's README, Owned Folders on
   the Assets page): every file a card you can play, rename and delete, and "Add to Voices"
   uploads or records a clip, saved as `<name>.wav`, after you confirm it is your voice or you
   have the speaker's permission. Renaming a clip renames the voice; a described one keeps its
-  description only if voices.json is edited to match. Swarmify never writes voices.json.
+  description only if voices.json is edited to match. Kriflow never writes voices.json.
 
 ## Tests
 
 `tools/test_packages.sh <core checkout> speech --no-cov` runs the connector against fake engines, installs
-this folder through Swarmify's real install path and voices a script over stdio MCP; `chatterbox/`
+this folder through Kriflow's real install path and voices a script over stdio MCP; `chatterbox/`
 has its own tests of the service with a fake model.

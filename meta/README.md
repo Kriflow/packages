@@ -2,9 +2,9 @@
 
 The Meta connector: it posts Reels to a world's Instagram account and the Facebook Page it is
 linked to through Meta's Graph API (v26.0). It is our own small MCP server (ADR 0015) and a
-Connector Package (ADR 0019), one of Swarmify's default packages: on startup Swarmify installs it
+Connector Package (ADR 0019), one of Kriflow's default packages: on startup Kriflow installs it
 from its release tag here into `<data dir>/packages/meta/<version>/` and enables it for every world that
-has not decided otherwise. Everything Swarmify knows of it is `swarmify-connector.toml`.
+has not decided otherwise. Everything Kriflow knows of it is `swarmify-connector.toml`.
 
 It posts Reels to Instagram and the Facebook Page, a retry never posts twice, and it reads
 back their views as Outcomes.
@@ -90,7 +90,7 @@ first byte goes out, and is written whole beside itself, then renamed into place
 leaves it half written. A Platform that finds its post from an earlier try is answered as found,
 and when every Platform's was, the answer carries `already_posted`. It answers `unsure:` instead
 of posting blind when the record cannot be read, the file differs from the fingerprint's, or a
-check of a recorded container or video fails; Swarmify then asks "Did this post go out?". The
+check of a recorded container or video fails; Kriflow then asks "Did this post go out?". The
 caption is only a hint: a `PUBLISHED` container is matched to a post with its caption made since
 the record began, and none is unsure. With two Platforms, an unsure one beside one that posted
 is listed under `failed` with its `unsure:` reason, so the one that posted is never posted again.
@@ -101,10 +101,10 @@ shared:
 
 - **Login configuration ID** (`meta_config_id`), shared by every world: the ID of the app's
   login configuration, in the Meta app under Facebook Login for Business, Configurations.
-  Sign-in sends it as the authorize URL's `config_id` (`authorize_settings`, Swarmify's README,
+  Sign-in sends it as the authorize URL's `config_id` (`authorize_settings`, Kriflow's README,
   OAuth sign-in) and refuses to start without it.
-- **Meta account** (`meta`), a Facebook sign-in (Swarmify's README, OAuth sign-in) that this
-  package finishes (ADR 0029). After Swarmify exchanges the code, the package's `signed_in` tool
+- **Meta account** (`meta`), a Facebook sign-in (Kriflow's README, OAuth sign-in) that this
+  package finishes (ADR 0029). After Kriflow exchanges the code, the package's `signed_in` tool
   swaps the token for a long-lived one, lists the account's Pages and keeps the token of the one
   Page with a linked Instagram account. A Page token made this way never expires, so it is never
   refreshed. The connector gets it as `META_ACCESS_TOKEN`.
@@ -117,7 +117,7 @@ configuration for a user access token with `pages_show_list`, `pages_read_engage
 `pages_manage_posts`, `instagram_basic`, `instagram_content_publish`, `read_insights`,
 `instagram_manage_insights`, `instagram_manage_comments` and `pages_manage_engagement` (the last two for the `comment`; plus
 `business_management` when the app belongs to a business portfolio), and add the redirect URI the
-Connectors page shows, `<the address you open Swarmify at>/api/setup/oauth/callback`, to Valid
+Connectors page shows, `<the address you open Kriflow at>/api/setup/oauth/callback`, to Valid
 OAuth Redirect URIs. While the app is in Development mode, everyone with a role on it can grant
 every permission, so the operator's own Pages need no App Review. Link the Instagram account
 (Professional, Business or Creator) to the Facebook Page.

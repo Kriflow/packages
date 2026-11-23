@@ -13,10 +13,10 @@ The composition receives the script as input props: `{"script": <text>, "scriptP
 `<output>.md`, with frontmatter (type video, world, run, stage, created) and a body that names
 the source script, so the graph sees it, and the template's git commit when it has one.
 
-Its `project` is a folder Swarmify gives as a full path: the world's Template a direct render
+Its `project` is a folder Kriflow gives as a full path: the world's Template a direct render
 stage names (ADR 0028), which the core resolves and checks, or a Build Session's build folder.
 
-It is a Connector Package (ADR 0019): `swarmify-connector.toml` beside it is everything Swarmify
+It is a Connector Package (ADR 0019): `kriflow-connector.toml` beside it is everything Kriflow
 knows of it. Its install step puts the Remotion CLI and the Chrome Headless Shell it downloads in
 `node_modules/` here (ADR 0026), and every render uses that browser. It runs in the connector
 sandbox (ADR 0021), which also holds the code a render executes, a Template's or a coding
@@ -60,8 +60,6 @@ DEV = Path("/dev")
 GPU = ("nvidia0", "dri/renderD*")
 """A GPU the sandbox handed this process (its Manifest's `permissions.gpu`): NVIDIA's, or any
 driver's DRM render node."""
-GPU_LOCK = "SWARMIFY_GPU_LOCK"
-"""The lock file every process granted the GPU shares, which each GPU chunk holds."""
 PACKAGE = "remotion_render"
 WAITING = "Waiting for the GPU"
 GRACE = 5.0
@@ -77,7 +75,7 @@ def _now() -> str:
 
 
 def project_folder(project: str) -> Path:
-    """The project folder, which Swarmify gives as a full path: a world's Template it resolved
+    """The project folder, which Kriflow gives as a full path: a world's Template it resolved
     from the stage's `project`, or a build folder of the run."""
     path = Path(project)
     if not path.is_absolute():
@@ -388,16 +386,22 @@ def _locked(path: Path) -> IO[str] | None:
         return None
 
 
+def _env(suffix: str) -> str | None:
+    """A variable the core gives this process: `KRIFLOW_<suffix>`, else `SWARMIFY_<suffix>`, which
+    cores from before the rename give alone (Kriflow/kriflow#595 sets both)."""
+    return os.environ.get(f"KRIFLOW_{suffix}") or os.environ.get(f"SWARMIFY_{suffix}")
+
+
 @contextmanager
 def _slot(resource: str, waits: Callable[[], None]) -> Iterator[None]:
-    """One Slot of a Swarmify Resource (ADR 0030) held while the block runs, by an exclusive
+    """One Slot of a Kriflow Resource (ADR 0030) held while the block runs, by an exclusive
     flock on one of its slot files, so any exit frees it: each in turn, else a waiting note (held
     locked too) and another try every half second; `waits` is called once when none is free. A
-    Swarmify from before Resources names only the gpu's lock (`SWARMIFY_GPU_LOCK`); with neither,
-    no lock. A copy of swarmify_connectors.resources.hold, which packages cannot import."""
-    env = f"SWARMIFY_RESOURCE_{resource.upper()}"
-    old = os.environ.get("SWARMIFY_GPU_LOCK") if resource == "gpu" else None
-    if not os.environ.get(env):
+    core from before Resources names only the gpu's lock (`KRIFLOW_GPU_LOCK`); with neither, no
+    lock. A copy of kriflow_connectors.resources.hold, which packages cannot import."""
+    name = f"RESOURCE_{resource.upper()}"
+    old = _env("GPU_LOCK") if resource == "gpu" else None
+    if not (folder := _env(name)):
         if not old:
             yield
             return
@@ -409,11 +413,11 @@ def _slot(resource: str, waits: Callable[[], None]) -> Iterator[None]:
                 fcntl.flock(lock, fcntl.LOCK_EX)
             yield
         return
-    place, slots = Path(os.environ[env]), int(os.environ.get(f"{env}_SLOTS") or 1)
+    place, slots = Path(folder), int(_env(f"{name}_SLOTS") or 1)
     note = {
-        "run": os.environ.get("SWARMIFY_RUN_ID"),
-        "root": os.environ.get("SWARMIFY_RUN_ROOT"),
-        "stage": os.environ.get("SWARMIFY_STAGE_ID"),
+        "run": _env("RUN_ID"),
+        "root": _env("RUN_ROOT"),
+        "stage": _env("STAGE_ID"),
         "package": PACKAGE,
         "since": time.time(),
     }

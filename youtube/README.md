@@ -2,15 +2,15 @@
 
 The YouTube connector: it uploads a video to a YouTube channel through the YouTube Data API, now
 or scheduled, and reads view counts back. It is our own small MCP server (ADR 0015) and a
-Connector Package (ADR 0019), one of Swarmify's default packages: on startup Swarmify installs it
+Connector Package (ADR 0019), one of Kriflow's default packages: on startup Kriflow installs it
 from its release tag here into `<data dir>/packages/youtube/<version>/`, where its install step (`uv sync`)
 puts httpx and the MCP SDK beside it, and enables it for every world that has not decided
-otherwise, so workflows call `youtube` exactly as before. Everything Swarmify knows of it is
+otherwise, so workflows call `youtube` exactly as before. Everything Kriflow knows of it is
 `swarmify-connector.toml`.
 
 ## Setup
 
-One field, **YouTube account** (`youtube`), a Google sign-in (Swarmify's README, OAuth sign-in): Swarmify
+One field, **YouTube account** (`youtube`), a Google sign-in (Kriflow's README, OAuth sign-in): Kriflow
 keeps the token set and starts the connector with a current access token as
 `YOUTUBE_ACCESS_TOKEN`. It asks for the `youtube.upload`, `youtube.readonly`,
 `yt-analytics.readonly` and `youtube.force-ssl` (to post the `comment`) scopes, offline access and the consent screen every time, so Google always
@@ -19,7 +19,7 @@ issues a refresh token.
 Once: create a Google Cloud project, enable the YouTube Data API v3 and the YouTube Analytics
 API, configure the consent screen (while it is in Testing, add yourself as a test user) and create an OAuth client of type **Web
 application** whose authorized redirect URI is the one the Connectors page shows,
-`<the address you open Swarmify at>/api/setup/oauth/callback`. On the Connectors page save its client ID and secret as **YouTube account client ID** and
+`<the address you open Kriflow at>/api/setup/oauth/callback`. On the Connectors page save its client ID and secret as **YouTube account client ID** and
 **client secret**, then **Sign in** in each world with the Google account that owns that world's
 channel. The client ID and secret are shared by every world; the account is set per world, so each
 world posts to its own channel, and a world that has not signed in cannot post.
@@ -33,7 +33,7 @@ Upgrading from V1, where the terminal `authorize` command printed `YOUTUBE_REFRE
 `YOUTUBE_CLIENT_SECRET` into the client ID and secret. Since 1.6.2 `YOUTUBE_REFRESH_TOKEN` is not
 carried, since V1 does not say which world's channel it is: sign in in each world. The
 `authorize` command is gone. V1's client is a Desktop app, which Google lets redirect only to the
-machine itself: to sign in with it, use the loopback fallback (Swarmify's README, OAuth
+machine itself: to sign in with it, use the loopback fallback (Kriflow's README, OAuth
 sign-in), or create a Web application client as above.
 
 Google and a `*.ts.net` address: Google accepts a redirect URI for a "Web application" client
@@ -53,7 +53,7 @@ Google expires the refresh tokens of an app whose consent screen is in **Testing
 To stop that, publish the app: Google Cloud console, Google Auth Platform (APIs & Services, OAuth
 consent screen), Audience, **Publish app**, then sign in again. A published app that asks for
 these scopes and is not verified shows an "unverified app" warning at sign-in (Advanced, then go
-to the app) and is capped at 100 users, which a self-hosted Swarmify never nears; its refresh
+to the app) and is capped at 100 users, which a self-hosted Kriflow never nears; its refresh
 tokens do not expire on a timer.
 
 The `comment` needs the `youtube.force-ssl` scope, which before 1.4.0 was not asked for. An
@@ -97,7 +97,7 @@ content made for children must set it. `hashtags` go out as the description's la
 punctuation, more than five, or a description over YouTube's 5,000 bytes with them is a problem
 the gate shows. `tags` go to YouTube's tags (`snippet.tags`) beside the retry tag, which is why
 they stop at 450 of YouTube's 500 characters. Both are editable at the gate. Writing them is the
-workflow's job, for example the script stage's frontmatter; Swarmify never makes them up.
+workflow's job, for example the script stage's frontmatter; Kriflow never makes them up.
 
 ## What it answers
 
@@ -143,7 +143,7 @@ listed on the Needs-you page. Before 1.3.0 the answer named YouTube's `privacy` 
 from then are still read.
 - `channel` answers the title of the channel the account posts to.
 
-A publish cut off mid-flight (a deploy restarting Swarmify) resumes safely, so Swarmify calls it
+A publish cut off mid-flight (a deploy restarting Kriflow) resumes safely, so Kriflow calls it
 again with the same idempotency key instead of asking. Each call keeps a Publish Record,
 `youtube-<key>.json`, in the stage's folder of the run: the file's fingerprint before the first
 byte, then the resumable upload session, the video's id and the comment's. Called again, it
@@ -151,9 +151,9 @@ answers a recorded video as is, asks a recorded session where it stands and fini
 in that same session (never a second video), and answers `already_posted` when an earlier try
 made the video. When it cannot tell (the session expired and the tag below does not find the
 video, Google does not answer, the record is unreadable or the file changed) it answers
-`unsure:` and Swarmify asks "Did this post go out?" instead of uploading blind.
+`unsure:` and Kriflow asks "Did this post go out?" instead of uploading blind.
 
-Each upload is also tagged `swarmify-<idempotency key>` beside its own tags, and before a new
+Each upload is also tagged `swarmify-<idempotency key>` (the old product name, kept so a retry still finds an upload made before the rename) beside its own tags, and before a new
 upload the connector looks for that tag among the channel's latest 50 uploads (3 quota units),
 an extra check that answers the video an earlier attempt already put up. By default uploads have their own quota of 100 a day; the retry check and the other reads
 share 10,000 units a day

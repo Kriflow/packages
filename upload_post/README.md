@@ -2,11 +2,11 @@
 
 The Upload-Post connector: it posts or schedules a video to YouTube, TikTok and Instagram through
 [Upload-Post](https://www.upload-post.com). It is our own small MCP server over Upload-Post's
-HTTP API (ADR 0015), not Upload-Post's MCP, so it can answer Swarmify's publish contract. It is a
-Connector Package (ADR 0019) and one of Swarmify's default packages: on startup Swarmify installs
+HTTP API (ADR 0015), not Upload-Post's MCP, so it can answer Kriflow's publish contract. It is a
+Connector Package (ADR 0019) and one of Kriflow's default packages: on startup Kriflow installs
 it from its release tag here into `<data dir>/packages/upload_post/<version>/`, where its install step
 (`uv sync`) puts httpx and the MCP SDK beside it, and enables it for every world that has not
-decided otherwise, so workflows call `upload_post` exactly as before. Everything Swarmify knows
+decided otherwise, so workflows call `upload_post` exactly as before. Everything Kriflow knows
 of it is `swarmify-connector.toml`.
 
 ## Setup

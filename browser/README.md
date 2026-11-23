@@ -4,7 +4,7 @@ The browser connector: a headless Chromium that agents drive with tools on sites
 API, signing in with a World Login they never see. It is our own MCP server over Playwright
 (ADR 0015), not a vendor's, and a Connector Package (ADR 0019) that accepts a World Login
 (`[login] accepts = true`). It is not enabled by default: a world turns it on on the Connectors
-page. Everything Kriflow knows of it is `swarmify-connector.toml`.
+page. Everything Kriflow knows of it is `kriflow-connector.toml`.
 
 ## Setup
 

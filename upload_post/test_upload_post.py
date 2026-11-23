@@ -30,6 +30,8 @@ from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
 from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
+VERSION = read_manifest(HERE)["version"]
+"""The version this folder releases, so a release never reddens its own tests."""
 NOW = datetime(2026, 10, 26, 12, tzinfo=UTC)
 
 
@@ -259,7 +261,7 @@ def test_the_key_check_names_the_account_or_says_why_not(monkeypatch: pytest.Mon
         up.check_key()
 
 
-# Installed from this folder as a default package, as Swarmify does at startup.
+# Installed from this folder as a default package, as Kriflow does at startup.
 
 
 def registry(data: Path, transport: Any) -> Connectors:
@@ -277,7 +279,7 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     data = tmp_path_factory.mktemp("data")
     skip = shutil.ignore_patterns(".venv", "__pycache__")
     shutil.copytree(HERE, data / "repo" / "connectors" / "upload_post", ignore=skip)
-    assert registry(data, FakeTransport()).install_defaults() == {"upload_post": "1.0.2"}
+    assert registry(data, FakeTransport()).install_defaults() == {"upload_post": VERSION}
     return data / "packages"
 
 
@@ -363,7 +365,7 @@ def test_the_installed_package_starts_over_stdio_with_its_tools(
 ) -> None:
     connectors = given(McpTransport())
     found = connectors.find("w", "upload_post")
-    assert found is not None and found.version == "1.0.2"
+    assert found is not None and found.version == VERSION
     connectors.setups.put_value("upload_post", None, "api_key", "k")  # no live key check
     tools = connectors.transport.list_tools(found, {"UPLOAD_POST_API_KEY": "k"})
     assert sorted(t.name for t in tools) == ["check_key", "preview", "publish", "upload_status"]

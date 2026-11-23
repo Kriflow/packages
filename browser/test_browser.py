@@ -38,13 +38,14 @@ from kriflow_connectors import (
     FakeTransport,
     McpTransport,
     SqliteStorage,
+    read_manifest,
 )
 from kriflow_connectors.fake import default_list
 from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
 from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
-VERSION = "1.0.0"
+VERSION = read_manifest(HERE)["version"]
 USER, PASSWORD = "ana", "Pa55-word-77031"
 TOTP_SECRET = "JBSWY3DPEHPK3PXP"
 SMS = "482913"
@@ -52,7 +53,7 @@ HIDDEN = "[secret: shop_admin]"
 SHIPPED = (
     "browser.py",
     "install_chromium.py",
-    "swarmify-connector.toml",
+    "kriflow-connector.toml",
     "pyproject.toml",
     "uv.lock",
 )
@@ -275,7 +276,7 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
             )
             connectors.packages.repo = data / "repo"
             with pytest.MonkeyPatch.context() as m:
-                m.setenv("SWARMIFY_DEFAULT_PACKAGES", str(listed))
+                m.setenv("KRIFLOW_DEFAULT_PACKAGES", str(listed))
                 assert "browser" not in connectors.install_defaults()  # off by default
     assert (data / "packages" / "browser" / VERSION / ".browsers").is_dir()
     return data / "packages"
@@ -287,12 +288,12 @@ def login_env(
     if session is not None:
         (home / "login-session.json").write_text(session)
     return {
-        "SWARMIFY_LOGIN_NAME": "shop_admin",
-        "SWARMIFY_LOGIN_DOMAINS": site.host_a,
-        "SWARMIFY_LOGIN_USERNAME": USER,
-        "SWARMIFY_LOGIN_PASSWORD": PASSWORD,
-        **({"SWARMIFY_LOGIN_TOTP": TOTP_SECRET} if totp else {}),
-        "SWARMIFY_LOGIN_SESSION": str(home / "login-session.json"),
+        "KRIFLOW_LOGIN_NAME": "shop_admin",
+        "KRIFLOW_LOGIN_DOMAINS": site.host_a,
+        "KRIFLOW_LOGIN_USERNAME": USER,
+        "KRIFLOW_LOGIN_PASSWORD": PASSWORD,
+        **({"KRIFLOW_LOGIN_TOTP": TOTP_SECRET} if totp else {}),
+        "KRIFLOW_LOGIN_SESSION": str(home / "login-session.json"),
     }
 
 
@@ -306,7 +307,7 @@ def served(
     home, world = tmp_path / "home", tmp_path / "world"
     home.mkdir(parents=True, exist_ok=True)
     (world / "runs" / "r" / "s").mkdir(parents=True, exist_ok=True)
-    stage = {"SWARMIFY_STAGE_DIR": str(world / "runs" / "r" / "s")}
+    stage = {"KRIFLOW_STAGE_DIR": str(world / "runs" / "r" / "s")}
     folder = installed / "browser" / VERSION
     package = Connector(
         "browser", "w", "Browser", "tool", [".venv/bin/python", "browser.py"], folder=str(folder)
@@ -386,7 +387,7 @@ def test_sign_in_fills_reuses_its_session_and_replaces_a_stale_one(
     assert [c["value"] for c in fresh if c["name"] == "sid"] != [sid]
 
     # A wrong password fails with the site's own words
-    env = {**login_env(site, home), "SWARMIFY_LOGIN_PASSWORD": "Not-the-pa55word"}
+    env = {**login_env(site, home), "KRIFLOW_LOGIN_PASSWORD": "Not-the-pa55word"}
     with served(installed, tmp_path / "4", env) as call:
         failed = call("sign_in", url=f"{site.a}/login")
     assert failed == {"login_result": "failed", "message": "Wrong username or password."}
@@ -512,7 +513,7 @@ def test_without_a_login_it_browses_only_its_own_loopback(
 def test_a_connector_stage_signs_in_in_the_sandbox_and_nothing_leaks(
     installed: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, site: FakeSite
 ) -> None:
-    monkeypatch.setenv("SWARMIFY_LOGIN_ALLOW_LOOPBACK", "1")  # the fake site is on loopback
+    monkeypatch.setenv("KRIFLOW_LOGIN_ALLOW_LOOPBACK", "1")  # the fake site is on loopback
     data = tmp_path / "data"
     data.mkdir()
     (data / "packages").symlink_to(installed)  # installed already: only remembered

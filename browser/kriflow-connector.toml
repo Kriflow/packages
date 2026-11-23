@@ -2,8 +2,9 @@
 # headless Chromium (ADR 0015), signing in with the World Login a stage names (spec: World Logins
 # And Browser Connector). Off until a world enables it.
 name = "browser"
-version = "1.0.0"
-contract = 2
+version = "1.0.1"
+# 3: this Manifest is named kriflow-connector.toml, which cores from contract 3 read.
+contract = 3
 label = "Browser"
 about = "A headless browser agents drive on sites with no API, signing in with a World Login they never see."
 kind = "tool"

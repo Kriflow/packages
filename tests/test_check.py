@@ -72,6 +72,22 @@ def test_a_shipped_change_without_a_bump_is_refused(repo: Path) -> None:
     assert check.untagged(repo) == ["echo-v1.0.1"]
 
 
+def test_a_manifest_renamed_to_kriflow_is_a_release_and_still_found(repo: Path) -> None:
+    """Kriflow reads `kriflow-connector.toml` or `swarmify-connector.toml`; renaming the file
+    changes what a tag ships, so it needs a new version like any other shipped change."""
+    (repo / "echo/swarmify-connector.toml").rename(repo / "echo/kriflow-connector.toml")
+    assert check.problems(repo) == [
+        "echo: files changed since echo-v1.0.0; raise its version above 1.0.0"
+    ]
+    (repo / "echo/kriflow-connector.toml").write_text(
+        MANIFEST.format(version="1.0.1", help=f"{URL}/tree/main/echo#setup")
+    )
+    (repo / "index.toml").write_text(ENTRY.format(url=URL, ref="1.0.1", contract=1))
+    assert check.problems(repo) == []
+    commit(repo)
+    assert check.untagged(repo) == ["echo-v1.0.1"]
+
+
 def test_docs_and_tests_change_without_a_bump(repo: Path) -> None:
     (repo / "echo/README.md").write_text("# echo\n")
     (repo / "echo/test_echo.py").write_text("def test(): pass\n")

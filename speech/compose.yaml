@@ -1,7 +1,9 @@
-# The speech engines, run by the operator beside Swarmify (ADR 0026; README.md, Running the
-# engines beside Swarmify): `docker compose -f speech/compose.yaml up -d` from the
-# repository root, after Swarmify's own compose file, whose network this one joins. Swarmify polls
-# their /health and never starts or stops them.
+# The speech engines, run by the operator beside Kriflow (ADR 0026; README.md, Running the
+# engines beside Kriflow): `docker compose -f speech/compose.yaml up -d` from the
+# repository root, after Kriflow's own compose file, whose network this one joins. Kriflow polls
+# their /health and never starts or stops them. The project, network and volume keep their
+# Swarmify names on purpose (test_compose_names.py): renaming them makes a second set of
+# containers, re-downloads the models and cuts the engines off the api.
 name: swarmify-speech
 
 services:
@@ -38,7 +40,7 @@ services:
           devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
 
 networks:
-  # Swarmify's (compose.yaml at the repository root), so its api reaches these by service name.
+  # Kriflow's (compose.yaml at the repository root), so its api reaches these by service name.
   default:
     name: swarmify
     external: true

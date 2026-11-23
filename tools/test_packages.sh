@@ -12,7 +12,8 @@ core=$(cd "$1" && pwd)
 shift
 here=$(cd "$(dirname "$0")/.." && pwd)
 names=()
-for manifest in "$here"/*/swarmify-connector.toml; do
+for manifest in "$here"/*/kriflow-connector.toml "$here"/*/swarmify-connector.toml; do
+  [ -f "$manifest" ] || continue
   name=$(basename "$(dirname "$manifest")")
   rm -rf "$core/connectors/$name"
   cp -R "$here/$name" "$core/connectors/$name"

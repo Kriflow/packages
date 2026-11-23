@@ -1,7 +1,7 @@
 # The browser connector's own uv project, outside the Kriflow workspace: its install step syncs
 # these into the installed version's folder, then puts Chromium beside them (ADR 0026).
 [project]
-name = "swarmify-browser"
+name = "kriflow-browser"
 version = "1.0.0"
 description = "A headless Chromium for agents, signing in with a World Login it never shows them"
 requires-python = ">=3.12"

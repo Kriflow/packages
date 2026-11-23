@@ -1,7 +1,7 @@
-# The render connector's own uv project, outside the Swarmify workspace: its install step syncs
+# The render connector's own uv project, outside the Kriflow workspace: its install step syncs
 # these into the installed version's folder (ADR 0026).
 [project]
-name = "swarmify-remotion-render"
+name = "kriflow-remotion-render"
 version = "1.0.0"
 description = "Renders a script to a video with the Remotion CLI"
 requires-python = ">=3.12"

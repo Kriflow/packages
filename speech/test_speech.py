@@ -324,14 +324,14 @@ def test_a_failing_engine_redoes_the_whole_run_on_the_next_so_voices_never_mix()
 def test_each_request_to_a_gpu_engine_holds_a_gpu_slot_and_says_while_it_waits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """Swarmify's Resources (ADR 0030): another process holding the gpu's one Slot, a request
+    """Kriflow's Resources (ADR 0030): another process holding the gpu's one Slot, a request
     to an engine on the GPU waits, saying so, with a waiting note naming its run; one to an
     engine off it (Kokoro) never waits."""
     gpu = tmp_path / "gpu"
     (gpu / "waiting").mkdir(parents=True)
-    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU", str(gpu))
-    monkeypatch.setenv("SWARMIFY_RESOURCE_GPU_SLOTS", "1")
-    monkeypatch.setenv("SWARMIFY_RUN_ID", "run_7")
+    monkeypatch.setenv("KRIFLOW_RESOURCE_GPU", str(gpu))
+    monkeypatch.setenv("KRIFLOW_RESOURCE_GPU_SLOTS", "1")
+    monkeypatch.setenv("KRIFLOW_RUN_ID", "run_7")
     monkeypatch.setenv("SPEECH_GPU_ENGINES", "http://b")
     seen: list[str] = []
     notes: list[dict[str, Any]] = []
@@ -430,6 +430,8 @@ def test_a_streamed_wav_with_a_bogus_length_is_read_to_its_end() -> None:
 
 
 HERE = Path(__file__).parent
+VERSION = read_manifest(HERE)["version"]
+"""The version this folder releases, so a release never reddens its own tests."""
 
 
 def test_it_declares_the_gpu_resource_and_which_engines_run_on_it() -> None:
@@ -472,7 +474,7 @@ def test_a_script_of_the_declared_type_parses_and_a_bad_one_is_named_by_both() -
         sp.parse_script(f"```json\n{json.dumps(bad)}\n```")
 
 
-# Installed from this folder as a default package, as Swarmify does at startup.
+# Installed from this folder as a default package, as Kriflow does at startup.
 
 
 def registry(data: Path, transport: Any) -> Connectors:
@@ -488,7 +490,7 @@ def registry(data: Path, transport: Any) -> Connectors:
 def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """One real install for the module: copied to the packages folder and `uv sync`ed there."""
     data = tmp_path_factory.mktemp("data")
-    assert registry(data, FakeTransport()).install_defaults()["speech"] == "1.3.3"
+    assert registry(data, FakeTransport()).install_defaults()["speech"] == VERSION
     return data / "packages"
 
 
@@ -507,7 +509,7 @@ def given(installed: Path, tmp_path: Path) -> Callable[[Any], Connectors]:
 
 
 def test_install_puts_its_dependencies_beside_it(installed: Path) -> None:
-    folder = installed / "speech" / "1.3.3"
+    folder = installed / "speech" / VERSION
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "speech.py").is_file()
 
 
@@ -535,7 +537,7 @@ def test_the_engines_setting_reaches_the_process_as_speech_endpoints(
 ) -> None:
     connectors = given(FakeTransport())
     speech = connectors.find("w", "speech")
-    assert speech is not None and speech.version == "1.3.3"
+    assert speech is not None and speech.version == VERSION
     assert connectors._env(speech) == {
         "SPEECH_ENDPOINTS": sp.DEFAULT_ENDPOINTS,
         "SPEECH_GPU_ENGINES": sp.DEFAULT_GPU_ENGINES,

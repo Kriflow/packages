@@ -21,7 +21,9 @@ import tomllib
 from pathlib import Path, PurePosixPath
 
 REPO_URL = "https://github.com/Kriflow/packages"
-MANIFEST = "swarmify-connector.toml"
+MANIFESTS = ("kriflow-connector.toml", "swarmify-connector.toml")
+"""A package's Manifest, under its new name or the one released versions keep (Kriflow/kriflow
+reads both since package contract 3)."""
 
 
 def git(root: Path, *args: str) -> str:
@@ -36,7 +38,8 @@ def version_key(version: str) -> tuple[int, ...]:
 
 def packages(root: Path) -> dict[str, dict]:
     """Each package folder's Manifest, by folder name."""
-    return {m.parent.name: tomllib.loads(m.read_text()) for m in sorted(root.glob(f"*/{MANIFEST}"))}
+    found = sorted(m for name in MANIFESTS for m in root.glob(f"*/{name}"))
+    return {m.parent.name: tomllib.loads(m.read_text()) for m in found}
 
 
 def newest_tag(root: Path, name: str) -> str | None:

@@ -13,11 +13,11 @@ connector answers its `script` type for that world with a `voice` to choose from
 engine can (`resolve`).
 Only this connector gives `voices/` a meaning; to the core the schema is opaque.
 
-It is a Connector Package (ADR 0019): `swarmify-connector.toml` beside it is everything Swarmify
+It is a Connector Package (ADR 0019): `kriflow-connector.toml` beside it is everything Kriflow
 knows of it, including the engines as a Setting and a Service whose health the core polls.
 
 An engine `SPEECH_GPU_ENGINES` lists runs on the GPU the renders share: each request to it holds
-a Slot of the gpu Resource (Swarmify ADR 0030), so a voice and a Blender render never fight over
+a Slot of the gpu Resource (Kriflow ADR 0030), so a voice and a Blender render never fight over
 video memory.
 """
 
@@ -46,7 +46,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 MANIFEST: dict[str, Any] = tomllib.loads(
-    (Path(__file__).parent / "swarmify-connector.toml").read_text()
+    (Path(__file__).parent / "kriflow-connector.toml").read_text()
 )
 SCRIPT: dict[str, Any] = MANIFEST["types"]["script"]
 """The `script` type the Manifest declares (issue 133): a stage that writes its input promises it
@@ -99,16 +99,22 @@ def _locked(path: Path) -> IO[str] | None:
         return None
 
 
+def _env(suffix: str) -> str | None:
+    """A variable the core gives this process: `KRIFLOW_<suffix>`, else `SWARMIFY_<suffix>`, which
+    cores from before the rename give alone (Kriflow/kriflow#595 sets both)."""
+    return os.environ.get(f"KRIFLOW_{suffix}") or os.environ.get(f"SWARMIFY_{suffix}")
+
+
 @contextlib.contextmanager
 def _slot(resource: str, waits: Callable[[], None]) -> Iterator[None]:
-    """One Slot of a Swarmify Resource (ADR 0030) held while the block runs, by an exclusive
+    """One Slot of a Kriflow Resource (ADR 0030) held while the block runs, by an exclusive
     flock on one of its slot files, so any exit frees it: each in turn, else a waiting note (held
     locked too) and another try every half second; `waits` is called once when none is free. A
-    Swarmify from before Resources names only the gpu's lock (`SWARMIFY_GPU_LOCK`); with neither,
-    no lock. A copy of swarmify_connectors.resources.hold, which packages cannot import."""
-    env = f"SWARMIFY_RESOURCE_{resource.upper()}"
-    old = os.environ.get("SWARMIFY_GPU_LOCK") if resource == "gpu" else None
-    if not os.environ.get(env):
+    core from before Resources names only the gpu's lock (`KRIFLOW_GPU_LOCK`); with neither, no
+    lock. A copy of kriflow_connectors.resources.hold, which packages cannot import."""
+    name = f"RESOURCE_{resource.upper()}"
+    old = _env("GPU_LOCK") if resource == "gpu" else None
+    if not (folder := _env(name)):
         if not old:
             yield
             return
@@ -120,11 +126,11 @@ def _slot(resource: str, waits: Callable[[], None]) -> Iterator[None]:
                 fcntl.flock(lock, fcntl.LOCK_EX)
             yield
         return
-    place, slots = Path(os.environ[env]), int(os.environ.get(f"{env}_SLOTS") or 1)
+    place, slots = Path(folder), int(_env(f"{name}_SLOTS") or 1)
     note = {
-        "run": os.environ.get("SWARMIFY_RUN_ID"),
-        "root": os.environ.get("SWARMIFY_RUN_ROOT"),
-        "stage": os.environ.get("SWARMIFY_STAGE_ID"),
+        "run": _env("RUN_ID"),
+        "root": _env("RUN_ROOT"),
+        "stage": _env("STAGE_ID"),
         "package": PACKAGE,
         "since": time.time(),
     }

@@ -1,7 +1,7 @@
-# The speech connector's own uv project, outside the Swarmify workspace: its install step syncs
+# The speech connector's own uv project, outside the Kriflow workspace: its install step syncs
 # these into the installed version's folder (ADR 0026).
 [project]
-name = "swarmify-speech"
+name = "kriflow-speech"
 version = "1.1.0"
 description = "Voices a script, one take per scene, with word timings and cut points"
 requires-python = ">=3.12"

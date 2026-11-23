@@ -141,7 +141,8 @@ def test_it_runs_on_an_nvidia_gpu_else_an_apple_one_else_the_cpu(
 def test_idle_unload_frees_the_models_and_the_next_take_reloads(
     monkeypatch: pytest.MonkeyPatch, full: Turbo
 ) -> None:
-    """After an hour without a take both models and their voices go; a take loads Turbo again."""
+    """After IDLE_UNLOAD seconds without a take both models and their voices go; a take loads
+    Turbo again."""
     monkeypatch.setattr(server, "IDLE_UNLOAD", 3600.0)
     monkeypatch.setattr(server, "last_used", 1000.0)
     assert not server.unload_idle(now=1000.0 + 3599)

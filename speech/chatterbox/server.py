@@ -8,16 +8,18 @@ POST /v1/audio/speech  OpenAI-style JSON {"input", "voice", "response_format": "
                        other model is Turbo, which takes `temperature` only
 POST /v1/align         form fields `file` (audio) and `text`: {"timestamps": [{"word", "start_time",
                        "end_time"}]}, the shape Kokoro-FastAPI's captioned speech returns
-GET  /health           ok once both models are loaded, with the delivery `tags` Turbo understands
-                       written in brackets in the input, as "[whispering] Who sleeps?", and
-                       `clips: true`, since it takes a reference clip, and the `models` it serves
+GET  /health           ok once the server is up, with `loaded` (the models in memory), the
+                       delivery `tags` Turbo understands written in brackets in the input, as
+                       "[whispering] Who sleeps?", `clips: true`, since it takes a reference clip,
+                       and the `models` it serves
 
-Turbo and faster-whisper load once at start. Chatterbox runs on an NVIDIA GPU (CUDA) or the Apple
-GPU (MPS) when there is one, else on the CPU; faster-whisper runs on the CPU.
+faster-whisper loads at start; Turbo loads on the first take. Chatterbox runs on an NVIDIA GPU
+(CUDA) or the Apple GPU (MPS) when there is one, else on the CPU; faster-whisper runs on the CPU.
 
-After CHATTERBOX_IDLE_UNLOAD seconds without a take (default 3600; 0 keeps them forever) both
-Chatterbox models and their cached voices are dropped and the GPU memory is given back, so other
-GPU work (renders) can use it; the next take loads its model again (some seconds, once).
+After CHATTERBOX_IDLE_UNLOAD seconds without a take (default 120; 0 loads Turbo at start and keeps
+both forever) both Chatterbox models and their cached voices are dropped and the GPU memory is
+given back, so other GPU work (renders) can use it; the next take loads its model again (some
+seconds, once per burst of takes).
 """
 
 import gc
@@ -49,7 +51,7 @@ voices: dict[tuple[str, str], Any] = {}
 FULL = "chatterbox"
 """The `model` that picks the full ChatterboxTTS; anything else is Turbo."""
 # ponytail: kept until the models unload when idle; a catalog holds a handful of clips.
-IDLE_UNLOAD = float(os.environ.get("CHATTERBOX_IDLE_UNLOAD", "3600"))
+IDLE_UNLOAD = float(os.environ.get("CHATTERBOX_IDLE_UNLOAD", "120"))
 last_used = time.monotonic()
 # Turbo's added tokens (its added_tokens.json), each spoken as `[tag]`.
 TAGS = [
@@ -75,7 +77,8 @@ async def lifespan(_app: FastAPI):
     from faster_whisper import WhisperModel
 
     models["device"] = device(torch)
-    models["tts"] = ChatterboxTurboTTS.from_pretrained(device=models["device"])
+    if IDLE_UNLOAD <= 0:
+        models["tts"] = ChatterboxTurboTTS.from_pretrained(device=models["device"])
     models["asr"] = WhisperModel("small.en", device="cpu", compute_type="int8")
     if IDLE_UNLOAD > 0:
         threading.Thread(target=_watch_idle, daemon=True).start()
@@ -142,7 +145,7 @@ def health() -> dict[str, Any]:
 
 
 def turbo_model() -> Any:
-    """Turbo, loaded at start and again after an idle unload (under tts_lock)."""
+    """Turbo, loaded by the first take and again after an idle unload (under tts_lock)."""
     if "tts" not in models:
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 

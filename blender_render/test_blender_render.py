@@ -26,7 +26,7 @@ import fetch
 import pytest
 from mcp import Client, StdioServerParameters
 
-from swarmify_connectors import (
+from kriflow_connectors import (
     MIGRATIONS,
     ConnectorError,
     Connectors,
@@ -36,8 +36,8 @@ from swarmify_connectors import (
     SqliteStorage,
     read_manifest,
 )
-from swarmify_kernel import MIGRATIONS as KERNEL_MIGRATIONS
-from swarmify_kernel.sqlite import connect, migrate
+from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
+from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
 W = "w"

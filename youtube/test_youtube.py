@@ -16,7 +16,7 @@ import pytest
 import youtube as yt
 from mcp.server.mcpserver.exceptions import ToolError
 
-from swarmify_connectors import (
+from kriflow_connectors import (
     MIGRATIONS,
     ConnectorError,
     Connectors,
@@ -26,10 +26,10 @@ from swarmify_connectors import (
     SqliteStorage,
     read_manifest,
 )
-from swarmify_connectors import oauth as core_oauth
-from swarmify_connectors.fake_oauth import FakeProvider
-from swarmify_kernel import MIGRATIONS as KERNEL_MIGRATIONS
-from swarmify_kernel.sqlite import connect, migrate
+from kriflow_connectors import oauth as core_oauth
+from kriflow_connectors.fake_oauth import FakeProvider
+from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
+from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
 NOW = datetime(2026, 10, 26, 12, tzinfo=UTC)

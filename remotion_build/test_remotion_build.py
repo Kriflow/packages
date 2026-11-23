@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from swarmify_connectors import build_session, read_manifest
-from swarmify_swarm import build
+from kriflow_connectors import build_session, read_manifest
+from kriflow_swarm import build
 
 HERE = Path(__file__).parent
 MANIFEST = read_manifest(HERE)

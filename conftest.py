@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from swarmify_connectors.fake import default_list
-from swarmify_connectors.packages import MANIFEST
+from kriflow_connectors.fake import default_list
+from kriflow_connectors.packages import MANIFEST
 
 
 @pytest.fixture(scope="module", autouse=True)

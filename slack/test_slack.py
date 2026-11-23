@@ -17,12 +17,12 @@ import slack_connector as sc
 import uvicorn
 from fastapi import FastAPI
 
-from swarmify_api.auth import Operator
-from swarmify_api.main import create_app
-from swarmify_connectors import Connector, FakeTransport, McpTransport
-from swarmify_notifications.fake import FakeSlack as FakeWebhook
-from swarmify_swarm import SdkRuntime, tool_id
-from swarmify_swarm.fake import Answer, Call, Script
+from kriflow_api.auth import Operator
+from kriflow_api.main import create_app
+from kriflow_connectors import Connector, FakeTransport, McpTransport
+from kriflow_notifications.fake import FakeSlack as FakeWebhook
+from kriflow_swarm import SdkRuntime, tool_id
+from kriflow_swarm.fake import Answer, Call, Script
 
 PASSWORD = "correct horse"
 CHANNEL = "C0123ABCDEF"

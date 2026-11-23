@@ -15,7 +15,7 @@ import pytest
 import upload_post as up
 from mcp.server.mcpserver.exceptions import ToolError
 
-from swarmify_connectors import (
+from kriflow_connectors import (
     MIGRATIONS,
     ConnectorError,
     Connectors,
@@ -26,8 +26,8 @@ from swarmify_connectors import (
     publish,
     read_manifest,
 )
-from swarmify_kernel import MIGRATIONS as KERNEL_MIGRATIONS
-from swarmify_kernel.sqlite import connect, migrate
+from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
+from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
 NOW = datetime(2026, 10, 26, 12, tzinfo=UTC)

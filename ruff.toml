@@ -8,4 +8,4 @@ src = ["tools"]
 select = ["E", "F", "I", "UP", "B"]
 
 [lint.isort]
-known-first-party = ["swarmify_*", "wordmatch"]
+known-first-party = ["kriflow_*", "wordmatch"]

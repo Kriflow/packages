@@ -15,7 +15,7 @@ import meta
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from swarmify_connectors import (
+from kriflow_connectors import (
     MIGRATIONS,
     ConnectorError,
     Connectors,
@@ -24,12 +24,12 @@ from swarmify_connectors import (
     SqliteStorage,
     read_manifest,
 )
-from swarmify_connectors import oauth as core_oauth
-from swarmify_kernel import MIGRATIONS as KERNEL_MIGRATIONS
-from swarmify_kernel.sqlite import connect, migrate
-from swarmify_workflows import ConnectorRef
-from swarmify_workflows.parse import parse_workflow
-from swarmify_workflows.validate import validate
+from kriflow_connectors import oauth as core_oauth
+from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
+from kriflow_kernel.sqlite import connect, migrate
+from kriflow_workflows import ConnectorRef
+from kriflow_workflows.parse import parse_workflow
+from kriflow_workflows.validate import validate
 
 HERE = Path(__file__).parent
 

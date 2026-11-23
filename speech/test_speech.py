@@ -24,7 +24,7 @@ import pytest
 import speech as sp
 from mcp.server.mcpserver.exceptions import ToolError
 
-from swarmify_connectors import (
+from kriflow_connectors import (
     MIGRATIONS,
     Connectors,
     Credentials,
@@ -33,8 +33,8 @@ from swarmify_connectors import (
     SqliteStorage,
     read_manifest,
 )
-from swarmify_kernel import MIGRATIONS as KERNEL_MIGRATIONS
-from swarmify_kernel.sqlite import connect, migrate
+from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
+from kriflow_kernel.sqlite import connect, migrate
 
 RATE = 16000
 SCRIPT = """# The hedgehog

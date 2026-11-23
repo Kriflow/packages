@@ -3,8 +3,8 @@ Manifest passes the core's Manifest check. Needs the core's environment (README,
 
 from pathlib import Path
 
-from swarmify_connectors.index import read_index
-from swarmify_connectors.packages import permissions, read_manifest
+from kriflow_connectors.index import read_index
+from kriflow_connectors.packages import permissions, read_manifest
 
 REPO = Path(__file__).parents[1]
 

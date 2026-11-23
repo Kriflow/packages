@@ -19,7 +19,7 @@ from typing import Any
 import hyperframes_render as hr
 import pytest
 
-from swarmify_connectors import (
+from kriflow_connectors import (
     MIGRATIONS,
     ConnectorError,
     Connectors,
@@ -30,9 +30,9 @@ from swarmify_connectors import (
     packages,
     read_manifest,
 )
-from swarmify_kernel import MIGRATIONS as KERNEL_MIGRATIONS
-from swarmify_kernel.events import read_after
-from swarmify_kernel.sqlite import connect, migrate
+from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
+from kriflow_kernel.events import read_after
+from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
 W = "w"

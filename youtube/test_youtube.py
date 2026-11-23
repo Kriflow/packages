@@ -1,8 +1,8 @@
 """The YouTube connector: its preview of what goes out (fields, problems, hashtags, tags and the
 schedule rules), the Data API calls against a fake Google (httpx's MockTransport, no network),
 including the retry tag, and the package installed through the real install path, given to a
-world as a default, signed in from a V1 refresh token and answering `preview` and `publish` over
-stdio MCP."""
+world as a default, its V1 app carried over, signed in per world and answering `preview` and
+`publish` over stdio MCP."""
 
 import json
 from collections.abc import Callable, Iterator
@@ -16,7 +16,7 @@ import pytest
 import youtube as yt
 from mcp.server.mcpserver.exceptions import ToolError
 
-from swarmify_connectors import (
+from kriflow_connectors import (
     MIGRATIONS,
     ConnectorError,
     Connectors,
@@ -26,10 +26,10 @@ from swarmify_connectors import (
     SqliteStorage,
     read_manifest,
 )
-from swarmify_connectors import oauth as core_oauth
-from swarmify_connectors.fake_oauth import FakeProvider
-from swarmify_kernel import MIGRATIONS as KERNEL_MIGRATIONS
-from swarmify_kernel.sqlite import connect, migrate
+from kriflow_connectors import oauth as core_oauth
+from kriflow_connectors.fake_oauth import FakeProvider
+from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
+from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
 NOW = datetime(2026, 10, 26, 12, tzinfo=UTC)
@@ -819,8 +819,8 @@ def provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeProvider]:
 def v1(tmp_path: Path, provider: FakeProvider) -> Callable[[Any], Connectors]:
     """A V1 data directory whose .env holds YouTube's app and the refresh token V1's terminal
     `authorize` printed, upgraded: the default packages installed for real, youtube given to
-    world `w`."""
-    provider.refresh_tokens.add("rt-from-v1")
+    worlds `w` and `w2`, and `w` signed in to its channel."""
+    provider.refresh_tokens.add("rt-of-w")
     env = tmp_path / ".env"
     env.write_text(
         "YOUTUBE_CLIENT_ID=yt-app\nYOUTUBE_CLIENT_SECRET=yt-secret\n"
@@ -830,25 +830,31 @@ def v1(tmp_path: Path, provider: FakeProvider) -> Callable[[Any], Connectors]:
 
     def make(transport: Any) -> Connectors:
         connectors = registry(tmp_path, transport)
-        assert connectors.install_defaults()["youtube"] == "1.6.1"
+        assert connectors.install_defaults()["youtube"] == "1.6.2"
         connectors.offer_defaults("w")
+        connectors.offer_defaults("w2")
+        signed_in = {"refresh_token": "rt-of-w", "expires_at": 0}  # as a sign-in in `w` keeps it
+        connectors.setups.put_value("youtube", "w", "youtube", signed_in)
         return connectors
 
     return make
 
 
-def test_a_v1_sign_in_is_carried_over_so_no_new_sign_in_is_needed(
+def test_the_v1_app_is_shared_and_each_world_signs_in_to_its_own_channel(
     v1: Callable[[Any], Connectors], provider: FakeProvider, tmp_path: Path
 ) -> None:
     connectors = v1(FakeTransport())
-    folder = tmp_path / "packages" / "youtube" / "1.6.1"
+    folder = tmp_path / "packages" / "youtube" / "1.6.2"
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "youtube.py").is_file()
-    shared, _ = connectors.setups.values("youtube", "w")
+    shared, world = connectors.setups.values("youtube", "w")
     assert (shared["youtube_client_id"], shared["youtube_client_secret"]) == ("yt-app", "yt-secret")
-    assert shared["youtube"]["refresh_token"] == "rt-from-v1"
+    assert "youtube" not in shared  # V1's token names no world, so it is not carried
+    assert world["youtube"]["refresh_token"] == "rt-of-w"
     youtube = connectors.find("w", "youtube")
-    assert youtube is not None and youtube.version == "1.6.1"
+    assert youtube is not None and youtube.version == "1.6.2"
     assert connectors.missing(youtube) == [] and connectors.sign_in_needed(youtube) == []
+    other = connectors.find("w2", "youtube")  # never signed in: w's channel is not its own
+    assert other is not None and connectors.missing(other) == ["youtube"]
 
     env = connectors._env(youtube)  # the first start refreshes the V1 token
     assert provider.grants == ["refresh_token"]

@@ -24,7 +24,7 @@ import pytest
 import speech as sp
 from mcp.server.mcpserver.exceptions import ToolError
 
-from swarmify_connectors import (
+from kriflow_connectors import (
     MIGRATIONS,
     Connectors,
     Credentials,
@@ -33,8 +33,8 @@ from swarmify_connectors import (
     SqliteStorage,
     read_manifest,
 )
-from swarmify_kernel import MIGRATIONS as KERNEL_MIGRATIONS
-from swarmify_kernel.sqlite import connect, migrate
+from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
+from kriflow_kernel.sqlite import connect, migrate
 
 RATE = 16000
 SCRIPT = """# The hedgehog
@@ -488,7 +488,7 @@ def registry(data: Path, transport: Any) -> Connectors:
 def installed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """One real install for the module: copied to the packages folder and `uv sync`ed there."""
     data = tmp_path_factory.mktemp("data")
-    assert registry(data, FakeTransport()).install_defaults()["speech"] == "1.3.2"
+    assert registry(data, FakeTransport()).install_defaults()["speech"] == "1.3.3"
     return data / "packages"
 
 
@@ -507,7 +507,7 @@ def given(installed: Path, tmp_path: Path) -> Callable[[Any], Connectors]:
 
 
 def test_install_puts_its_dependencies_beside_it(installed: Path) -> None:
-    folder = installed / "speech" / "1.3.2"
+    folder = installed / "speech" / "1.3.3"
     assert (folder / ".venv" / "bin" / "python").is_file() and (folder / "speech.py").is_file()
 
 
@@ -535,7 +535,7 @@ def test_the_engines_setting_reaches_the_process_as_speech_endpoints(
 ) -> None:
     connectors = given(FakeTransport())
     speech = connectors.find("w", "speech")
-    assert speech is not None and speech.version == "1.3.2"
+    assert speech is not None and speech.version == "1.3.3"
     assert connectors._env(speech) == {
         "SPEECH_ENDPOINTS": sp.DEFAULT_ENDPOINTS,
         "SPEECH_GPU_ENGINES": sp.DEFAULT_GPU_ENGINES,

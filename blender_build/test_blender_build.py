@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from swarmify_connectors import build_session, read_manifest
+from kriflow_connectors import build_session, read_manifest
 
 HERE = Path(__file__).parent
 MANIFEST = read_manifest(HERE)

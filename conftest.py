@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from swarmify_connectors.fake import default_list
-from swarmify_connectors.packages import MANIFEST
+from kriflow_connectors.fake import default_list
+from kriflow_connectors.packages import MANIFEST
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -24,5 +24,5 @@ def own_default_list(
         return
     listed = default_list(tmp_path_factory.mktemp("default-list"), {folder.name: folder})
     with pytest.MonkeyPatch.context() as m:
-        m.setenv("SWARMIFY_DEFAULT_PACKAGES", str(listed))
+        m.setenv("KRIFLOW_DEFAULT_PACKAGES", str(listed))
         yield

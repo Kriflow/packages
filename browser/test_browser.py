@@ -28,8 +28,8 @@ import browser as br
 import pytest
 from fastapi.testclient import TestClient
 
-from swarmify_api.main import create_app
-from swarmify_connectors import (
+from kriflow_api.main import create_app
+from kriflow_connectors import (
     MIGRATIONS,
     Connector,
     ConnectorError,
@@ -39,9 +39,9 @@ from swarmify_connectors import (
     McpTransport,
     SqliteStorage,
 )
-from swarmify_connectors.fake import default_list
-from swarmify_kernel import MIGRATIONS as KERNEL_MIGRATIONS
-from swarmify_kernel.sqlite import connect, migrate
+from kriflow_connectors.fake import default_list
+from kriflow_kernel import MIGRATIONS as KERNEL_MIGRATIONS
+from kriflow_kernel.sqlite import connect, migrate
 
 HERE = Path(__file__).parent
 VERSION = "1.0.0"

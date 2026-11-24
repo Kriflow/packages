@@ -1,0 +1,30 @@
+# The Sound Bank connector (README.md beside this file): an MCP server a swarm stage's agents
+# call to fetch a CC0 or public domain sound, or keep a take a run made, into the world's Sound
+# Bank as a Draft. Off until a world enables it.
+name = "sound_bank"
+version = "0.1.0"
+# 3: this Manifest is named kriflow-connector.toml, which cores from contract 3 read.
+contract = 3
+label = "Sound Bank"
+about = "Fetches CC0 or public domain sounds from BigSoundBank and Wikimedia Commons, or keeps a take a run made, into the world's Sound Bank as a Draft with a Demo."
+kind = "tool"
+stage_types = ["swarm"]
+enable_by_default = false
+planner_notes = "Agents call sound_search then sound_fetch(page, name, description) for a found sound, or sound_keep(file, name, description, source, licence) for a take an earlier stage of the run made (its absolute path in the run's folder). Each lands a Draft in the sounds Owned Folder with its Demo; dry_run on sound_keep only shapes it."
+
+runtime = "uv"
+# imageio-ffmpeg puts a static ffmpeg beside it (ADR 0026).
+install = ["uv", "sync", "--frozen", "--no-dev"]
+command = [".venv/bin/python", "sound_bank.py", "mcp"]
+
+# Its sandbox (ADR 0021): the two sound sources only. It reads the world's run folders, where an
+# earlier stage's take is (a tool lent to a swarm stage is not confined to that stage, so it is
+# granted no run folder otherwise), and writes the Sound Bank, its Owned Folder.
+[permissions]
+network = ["bigsoundbank.com", "commons.wikimedia.org", "upload.wikimedia.org"]
+folders = ["worlds/{world}/runs"]
+
+[[owned_folders]]
+folder = "sounds"
+label = "Sound Bank"
+about = "Sound effects a Template's kit plays: each a 48 kHz mono WAV with its entry in index.json (source, licence, tags) and a Demo in demos/. A Draft waits for approval."

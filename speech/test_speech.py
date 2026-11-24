@@ -69,33 +69,62 @@ SPOKEN = wav([(1.0, True), (0.3, False), (0.7, True), (0.2, False)])
 WORDS = [("who", 0.0, 0.5), ("sleeps", 0.5, 1.0), ("Good", 1.3, 1.6), ("night", 1.6, 2.0)]
 
 
+def said(text: str, upto: int | None = None) -> tuple[bytes, list[tuple[str, float, float]]]:
+    """A take of `text` (its [tags] unsaid) and when each word was said: 0.1 s of silence, then
+    each word a 0.4 s tone and 0.1 s of silence, then 0.2 s more. With `upto`, only that many
+    words are said and the take ends there, mid-sound, as Chatterbox's cut short ones do."""
+    words = sp._TAG.sub("", text).split()[:upto]
+    stamps = [(w, 0.1 + 0.5 * i, 0.5 + 0.5 * i) for i, w in enumerate(words)]
+    parts = [(0.1, False)] + [p for _ in words for p in ((0.4, True), (0.1, False))]
+    audio = wav(parts[:-1] if upto is not None else [*parts, (0.2, False)])
+    HEARD[audio] = stamps
+    return audio, stamps
+
+
+HEARD: dict[bytes, list[tuple[str, float, float]]] = {}
+"""What an aligner hears in each take `said` made: its words."""
+
+
+def form_text(request: httpx.Request) -> str:
+    return request.content.split(b'name="text"\r\n\r\n')[1].split(b"\r\n")[0].decode()
+
+
+def json_stamps(stamps: list[tuple[str, float, float]]) -> list[dict[str, Any]]:
+    return [{"word": w, "start_time": s, "end_time": e} for w, s, e in stamps]
+
+
 def kokoro(seen: list[str], fail: bool = False) -> Callable[[httpx.Request], httpx.Response]:
     """A captioned engine: its speech carries its own word times, punctuation tokens included."""
 
     def handle(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "ok"})  # no tags
+        if request.url.path == "/v1/align":
+            return httpx.Response(404)  # Kokoro-FastAPI has no aligner
         body = json.loads(request.content)
         seen.append(f"{request.url.host} {request.url.path} {body['input']}")
         if fail and "hedgehog" in body["input"]:
             return httpx.Response(500, text="out of memory")
-        stamps = [*WORDS[:2], ("?", 1.0, 1.3), *WORDS[2:], (".", 2.0, 2.1)]
+        audio, stamps = said(body["input"])
+        stamps += [("?", stamps[-1][2], stamps[-1][2] + 0.05)]  # its punctuation tokens
         return httpx.Response(
-            200,
-            json={
-                "audio": base64.b64encode(SPOKEN).decode(),
-                "timestamps": [{"word": w, "start_time": s, "end_time": e} for w, s, e in stamps],
-            },
+            200, json={"audio": base64.b64encode(audio).decode(), "timestamps": json_stamps(stamps)}
         )
 
     return handle
 
 
 def chatterbox(
-    seen: list[str], said: list[str] | None = None, fail: bool = False
+    seen: list[str],
+    spoken: list[str] | None = None,
+    fail: bool = False,
+    upto: Callable[[str, int | None], int | None] = lambda text, seed: None,
+    ears: bool = True,
 ) -> Callable[[httpx.Request], httpx.Response]:
-    """An engine without captions that advertises tags: speech, then its own alignment endpoint.
-    `said` gets each speech input and each text it aligns."""
+    """An engine without captions that advertises tags: speech, then its own alignment endpoint,
+    which hears what was said. `spoken` gets each speech input and each text it aligns; `upto`
+    says how many words of an input it says with a seed (None: all). Without `ears` its
+    aligner predates speech 1.3.5 and does not say what it heard."""
 
     def handle(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
@@ -104,17 +133,26 @@ def chatterbox(
         if request.url.path == "/dev/captioned_speech":
             return httpx.Response(404)
         if request.url.path == "/v1/audio/speech":
-            if said is not None:
-                said.append(json.loads(request.content)["input"])
-            return httpx.Response(500) if fail else httpx.Response(200, content=SPOKEN)
-        if said is not None:
-            said.append(request.content.split(b'name="text"\r\n\r\n')[1].split(b"\r\n")[0].decode())
-        # heard "Goodnight" as one word
-        heard = [*WORDS[:2], ("Goodnight", 1.3, 2.0)]
-        return httpx.Response(
-            200,
-            json={"timestamps": [{"word": w, "start_time": s, "end_time": e} for w, s, e in heard]},
-        )
+            body = json.loads(request.content)
+            if spoken is not None:
+                spoken.append(body["input"])
+            if fail:
+                return httpx.Response(500)
+            audio, _ = said(body["input"], upto(body["input"], body.get("seed")))
+            return httpx.Response(200, content=audio)
+        text = form_text(request)
+        if spoken is not None:
+            spoken.append(text)
+        audio = request.content.split(b"\r\n\r\n", 2)[-1].rsplit(b"\r\n--", 1)[0]
+        heard = HEARD.get(audio, [])
+        # the words of the text timed, the ones not heard sharing the end, as wordmatch does
+        timed = sp.match(text.split(), heard, heard[-1][2] + 0.2 if heard else 0.2)
+        answer: dict[str, Any] = {
+            "timestamps": json_stamps([(w, *t) for w, t in zip(text.split(), timed, strict=True)])
+        }
+        if ears:
+            answer["heard"] = json_stamps(heard)
+        return httpx.Response(200, json=answer)
 
     return handle
 
@@ -298,16 +336,25 @@ def test_the_first_engine_voices_every_scene_with_its_own_word_times() -> None:
         engine, _, _, takes = sp.voice_run(
             http, sp.parse_script(SCRIPT), ["http://a", "http://b"], "af_heart"
         )
-    assert engine == "http://a" and len(seen) == 2  # one call per scene, b never asked
+    # one call per line, each take heard by b's aligner (a has none): b never voices
+    assert seen == ["a /dev/captioned_speech Who sleeps?", "b /v1/align"] + [
+        "a /dev/captioned_speech Good night.", "b /v1/align",
+        "a /dev/captioned_speech A hedgehog.", "b /v1/align",
+    ]  # fmt: skip
     hook = takes[0][1]
-    assert hook["file"] == "narration/hook.wav" and hook["duration"] == 2.2
+    assert hook["file"] == "narration/hook.wav"
     first, second = hook["lines"]
+    # each line trimmed to its sound (0.05 s before, 0.15 s after), its pause between them
+    assert (first["cut_in"], first["cut_out"]) == (0.0, 1.1)
+    assert (second["cut_in"], second["cut_out"]) == (1.6, 2.7) and hook["duration"] == 2.7
+    assert first["joined_next"] is False and second["joined_next"] is False
     assert [w["text"] for w in first["words"]] == ["Who", " sleeps?"]
     assert [w["text"] for w in second["words"]] == ["Good", " night."]
     assert second["words"][1] == {
-        "text": " night.", "startMs": 1600, "endMs": 2000, "timestampMs": None, "confidence": None
+        "text": " night.", "startMs": 2150, "endMs": 2550, "timestampMs": None, "confidence": None
     }  # fmt: skip
     assert first["pause_after"] == 0.5 and second["pause_after"] == sp.PAUSE
+    assert hook["check"] == {"coverage": 1.0, "retries": 0, "warnings": []}
 
 
 def test_a_failing_engine_redoes_the_whole_run_on_the_next_so_voices_never_mix() -> None:
@@ -315,9 +362,12 @@ def test_a_failing_engine_redoes_the_whole_run_on_the_next_so_voices_never_mix()
     with engines(a=kokoro(seen, fail=True), b=chatterbox(seen)) as http:
         engine, _, _, takes = sp.voice_run(http, sp.parse_script(SCRIPT), ["http://a", "http://b"])
     assert engine == "http://b"
-    assert [s.split()[:2] for s in seen[:2]] == [["a", "/dev/captioned_speech"]] * 2
-    # b voices both scenes again, the hook included, through speech then alignment
-    assert seen[2:] == ["b /dev/captioned_speech", "b /v1/audio/speech", "b /v1/align"] * 2
+    assert [s.split()[:2] for s in seen if s.startswith("a")] == [
+        ["a", "/dev/captioned_speech"]
+    ] * 3
+    # b heard a's two lines, then voices every line again, the hook's included
+    voiced = [s for s in seen if s.startswith("b")][2:]
+    assert voiced == ["b /dev/captioned_speech", "b /v1/audio/speech", "b /v1/align"] * 3
     assert [t["scene"] for _, t in takes] == ["hook", "fact"]
 
 
@@ -377,12 +427,14 @@ TAGGED = """```json
 
 def test_an_engine_that_advertises_tags_hears_them_but_alignment_and_captions_do_not() -> None:
     seen: list[str] = []
-    said: list[str] = []
-    with engines(b=chatterbox(seen, said)) as http:
+    spoken: list[str] = []
+    with engines(b=chatterbox(seen, spoken)) as http:
         _, _, _, takes = sp.voice_run(http, sp.parse_script(TAGGED), ["http://b"])
-    assert said == [
-        "[whispering] Who sleeps? Good looks up night.",  # [sigh] is not among b's tags
-        "Who sleeps? Good looks up night.",
+    assert spoken == [
+        "[whispering] Who sleeps?",  # [sigh] is not among b's tags
+        "Who sleeps?",
+        "Good looks up night.",
+        "Good looks up night.",
     ]
     first, second = takes[0][1]["lines"]
     assert [w["text"] for w in first["words"]] == ["Who", " sleeps?"]
@@ -394,32 +446,158 @@ def test_an_engine_that_advertises_tags_hears_them_but_alignment_and_captions_do
 
 def test_a_fallback_to_an_engine_without_tags_strips_them() -> None:
     seen: list[str] = []
-    said: list[str] = []
+    spoken: list[str] = []
     kokoro_seen: list[str] = []
-    with engines(b=chatterbox(seen, said, fail=True), a=kokoro(kokoro_seen)) as http:
+    with engines(b=chatterbox(seen, spoken, fail=True), a=kokoro(kokoro_seen)) as http:
         engine, _, _, _ = sp.voice_run(http, sp.parse_script(TAGGED), ["http://b", "http://a"])
     assert engine == "http://a"
-    assert said == ["[whispering] Who sleeps? Good looks up night."]
-    assert kokoro_seen == ["a /dev/captioned_speech Who sleeps? Good looks up night."]
+    assert spoken[0] == "[whispering] Who sleeps?"  # then b only hears a's lines
+    assert spoken[1:] == ["Who sleeps?", "Good looks up night."]
+    assert kokoro_seen == [
+        "a /dev/captioned_speech Who sleeps?",
+        "a /dev/captioned_speech Good looks up night.",
+    ]
 
 
-def test_a_cut_lands_in_the_silence_between_lines() -> None:
+def test_a_cut_on_sound_is_flagged_as_joined() -> None:
     scene = sp.parse_script(SCRIPT)[0]
-    take = sp.take_timings(scene, SPOKEN, WORDS)
+    quiet = sp.take_timings(scene, SPOKEN, WORDS, [(0.0, 1.1), (1.2, 2.2)])
+    assert quiet["lines"][0]["joined_next"] is False
+    loud = sp.take_timings(scene, SPOKEN, WORDS, [(0.0, 0.9), (1.2, 2.2)])
+    assert loud["lines"][0]["joined_next"] is True and loud["lines"][1]["joined_next"] is False
+
+
+# Long lines go in parts, and every part is heard back (issue 9): Chatterbox stops at about 33 s.
+
+LONG = " ".join(f"Word{i}." if i % 10 == 9 else f"word{i}" for i in range(70))
+"""70 words in sentences of ten: over MAX_WORDS, so two parts."""
+
+
+def test_a_line_over_max_words_is_voiced_in_parts_split_at_sentences() -> None:
+    parts = sp.parts(LONG)
+    assert [len(p.split()) for p in parts] == [50, 20]
+    assert parts[0].endswith("Word49.") and " ".join(parts) == LONG
+    # no sentence end: at clauses, then by count; a tag is never a part of its own
+    clauses = ", ".join(" ".join(["la"] * 20) for _ in range(3))
+    assert [len(p.split()) for p in sp.parts(clauses)] == [40, 20]
+    assert [len(p.split()) for p in sp.parts(" ".join(["la"] * 120))] == [50, 50, 20]
+    assert sp.parts("[laugh] Short.") == ["[laugh] Short."]
+
+
+def script_of(*lines: str) -> list[dict[str, Any]]:
+    block = {"scenes": [{"id": "s13", "lines": [{"text": t, "pause_after": 0.5} for t in lines]}]}
+    return sp.parse_script(f"```json\n{json.dumps(block)}\n```")
+
+
+def test_a_long_line_is_voiced_in_parts_joined_on_silence_with_every_word_timed() -> None:
+    seen: list[str] = []
+    spoken: list[str] = []
+    with engines(b=chatterbox(seen, spoken)) as http:
+        _, _, _, takes = sp.voice_run(http, script_of(LONG, "The end."), ["http://b"])
+    assert [x for x in spoken if x.startswith("word0") or x.startswith("word50")] == [
+        sp.parts(LONG)[0], sp.parts(LONG)[0], sp.parts(LONG)[1], sp.parts(LONG)[1]
+    ]  # fmt: skip
+    audio, take = takes[0]
     first, second = take["lines"]
-    assert first["cut_in"] == 0.0 and second["cut_out"] == 2.15  # a 0.15 s tail kept
-    assert 1.0 < first["cut_out"] == second["cut_in"] < 1.3
-    assert first["joined_next"] is False
+    assert len(first["words"]) == 70 and first["joined_next"] is False
+    # each part is 0.1 + 0.5 s a word + 0.1 s; trimmed to 0.05 s before and 0.15 s after
+    part1, part2 = 50 * 0.5 - 0.1 + 0.2, 20 * 0.5 - 0.1 + 0.2
+    assert first["cut_out"] == pytest.approx(part1 + sp.INNER + part2, abs=0.02)
+    assert second["cut_in"] == pytest.approx(first["cut_out"] + 0.5, abs=0.02)
+    # the second part's words are timed where they sit in the take
+    assert first["words"][50]["startMs"] == pytest.approx((part1 + sp.INNER + 0.05) * 1000, abs=20)
+    assert take["check"] == {"coverage": 1.0, "retries": 0, "warnings": []}
 
 
-def test_lines_with_no_silence_between_them_are_flagged() -> None:
-    scene = sp.parse_script(SCRIPT)[0]
-    take = sp.take_timings(scene, wav([(2.0, True), (0.2, False)]), WORDS)
-    assert take["lines"][0]["joined_next"] is True and take["lines"][1]["joined_next"] is False
-    # a gap shorter than the window has no silence either: the cut goes in its middle
-    touching = [*WORDS[:2], ("Good", 1.0, 1.6), WORDS[3]]
-    first, _ = sp.take_timings(scene, SPOKEN, touching)["lines"]
-    assert first["joined_next"] is True and first["cut_out"] == 1.0
+def test_a_take_cut_short_is_heard_and_voiced_again_with_the_next_seed() -> None:
+    seen: list[str] = []
+    spoken: list[str] = []
+
+    def cut(text: str, seed: int | None) -> int | None:
+        return len(text.split()) // 2 if seed == 7 else None  # seed 7 stops halfway
+
+    with engines(b=chatterbox(seen, spoken, upto=cut)) as http:
+        _, _, _, takes = sp.voice_run(http, script_of(LONG), ["http://b"], seed=7)
+    take = takes[0][1]
+    assert take["check"]["retries"] == 2 and take["check"]["coverage"] == 1.0
+    assert take["check"]["warnings"] == [
+        "scene s13, line 1, part 1: said whole on try 2",
+        "scene s13, line 1, part 2: said whole on try 2",
+    ]
+    assert len(take["lines"][0]["words"]) == 70
+
+
+def test_a_take_ending_early_with_its_last_words_unheard_fails_the_check() -> None:
+    words = [f"w{i}" for i in range(40)]
+    heard = [(w, 0.1 + 0.5 * i, 0.5 + 0.5 * i) for i, w in enumerate(words)]
+    whole = sp.hearing(words, heard, 20.0)
+    assert whole == {"ok": True, "coverage": 1.0, "missing": []}
+    # 38 of 40 heard is 95%, but not the last two words: cut short
+    assert sp.hearing(words, heard[:-2], 20.0)["ok"] is False
+    # every word heard, then 5 s of babble after the last one: not said as written
+    assert sp.hearing(words, heard, 25.6)["ok"] is False
+    # spelled differently or run together still counts; punctuation never needs hearing
+    assert (
+        sp.hearing(
+            ["Redis,", "good", "night", "\u2014"], [("Reddis", 0, 1), ("goodnight", 1, 2)], 2
+        )["coverage"]
+        == 1.0
+    )
+    # Whisper writes numbers in digits where the script spells them, and the other way round
+    spelled = (
+        "A hundred thousand clicks over sixty-four partitions is fifteen hundred each, two"
+        " hundred, two hundred bytes or 50% of one ad"
+    ).split()
+    digits = "100 ,000 clicks over 64 partitions is 1 ,500 each, 200, 200 bytes or fifty percent"
+    digits += " of one ad"
+    stamps = [(w, float(i), i + 1.0) for i, w in enumerate(digits.split())]
+    assert sp.hearing(spelled, stamps, len(stamps)) == {"ok": True, "coverage": 1.0, "missing": []}
+    assert [t for _, t in sp._spoken("one two three".split())] == ["1", "2", "3"]
+    # what Whisper really heard on SystemDesign's s07: words misheard, none left out
+    want = "The sink is where people slip. Replays are safe because writes are idempotent.".split()
+    heard = "The sync is where people slip. Pre -plays are safe because rights are a dempotent."
+    stamps = [(w, float(i), i + 1.0) for i, w in enumerate(heard.split())]
+    assert sp.hearing(want, stamps, len(stamps))["coverage"] == 1.0
+    # but a word heard as something unlike it, or nothing, is missing
+    unlike = [(w, float(i), i + 1.0) for i, w in enumerate("The cat is where".split())]
+    assert sp.hearing("The sink is where".split(), unlike, 4)["missing"] == ["sink"]
+
+
+def test_a_line_never_said_whole_fails_the_stage_naming_scene_line_and_missing_words() -> None:
+    seen: list[str] = []
+    with (
+        engines(b=chatterbox(seen, upto=lambda text, seed: 1)) as http,
+        pytest.raises(ToolError) as err,
+    ):
+        sp.voice_run(http, script_of("Hello there.", "Who sleeps all winter long?"), ["http://b"])
+    message = str(err.value)
+    assert "scene s13, line 1: the engine did not say it whole in 4 tries" in message
+    assert "missing: there." in message
+    assert seen.count("b /v1/audio/speech") == sp.TRIES  # never moved on to line 2
+
+
+def test_with_no_engine_to_hear_them_takes_are_kept_and_marked_unchecked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kokoro alone, or an aligner before 1.3.5: the takes are kept, as before, but the
+    timings and the call say they were not checked rather than pass them quietly."""
+    seen: list[str] = []
+    monkeypatch.setenv("SPEECH_ENDPOINTS", "http://a,http://b")
+    monkeypatch.setattr(
+        sp, "_client", lambda: engines(a=kokoro(seen), b=chatterbox(seen, ears=False))
+    )
+    source = tmp_path / "script.md"
+    source.write_text(SCRIPT)
+    answer = sp.speech("k", str(tmp_path / "timings.json"), str(source))
+    timings = json.loads((tmp_path / "timings.json").read_text())
+    assert timings["engine"] == "http://a"
+    assert timings["takes"][0]["check"] == {
+        "coverage": None,
+        "retries": 0,
+        "warnings": [sp.UNCHECKED],
+    }
+    assert timings["warnings"] == [sp.UNCHECKED] and sp.UNCHECKED in answer["message"]
+    assert seen.count("b /v1/align") == 1  # asked once, then never again
 
 
 def test_a_streamed_wav_with_a_bogus_length_is_read_to_its_end() -> None:
@@ -602,7 +780,7 @@ def test_the_installed_package_voices_a_script_over_stdio(
     assert call.response["engine"] == engine and call.response["takes"] == 2
     timings = json.loads(out.read_text())
     assert [t["file"] for t in timings["takes"]] == ["narration/hook.wav", "narration/fact.wav"]
-    assert (out.parent / "narration" / "hook.wav").read_bytes() == SPOKEN
+    assert sp.decode((out.parent / "narration" / "hook.wav").read_bytes())[1] == RATE
     assert timings["seed"] == 7
 
     speech = real.find("w", "speech")
@@ -760,9 +938,9 @@ def voiced(
             return httpx.Response(200, json={"voices": listed}) if presets else httpx.Response(404)
         if path == "/dev/captioned_speech":
             return httpx.Response(404)
-        if path == "/v1/audio/align" or path == "/v1/align":
-            stamps = [{"word": w, "start_time": s, "end_time": e} for w, s, e in WORDS]
-            return httpx.Response(200, json={"timestamps": stamps})
+        if path == "/v1/align":  # hears every word
+            stamps = json_stamps(said(form_text(request))[1])
+            return httpx.Response(200, json={"timestamps": stamps, "heard": stamps})
         kind = request.headers["content-type"]
         if kind.startswith("multipart/"):
             parts = request.content.split(b"--" + kind.split("boundary=")[1].encode())
@@ -786,7 +964,7 @@ def test_a_clip_voice_goes_up_to_an_engine_that_takes_clips(assets: Path) -> Non
     with engines(c=voiced(seen, clips=True)) as http:
         _, spoke, _, _ = sp.voice_run(http, sp.parse_script(SCRIPT), ["http://c"], "narrator",
                                    voices=voices)  # fmt: skip
-    assert spoke == "narrator" and len(seen) == 2
+    assert spoke == "narrator" and len(seen) == 3  # one request per line
     assert all(s["reference"] == CLIP and "voice" not in s for s in seen)
 
 
@@ -796,7 +974,7 @@ def test_a_preset_goes_to_an_engine_that_has_it(assets: Path) -> None:
     with engines(k=voiced(seen, presets=["af_heart", "am_puck"])) as http:
         _, spoke, _, _ = sp.voice_run(http, sp.parse_script(SCRIPT), ["http://k"], "puck",
                                    voices=voices)  # fmt: skip
-    assert spoke == "puck" and [s["voice"] for s in seen] == ["am_puck", "am_puck"]
+    assert spoke == "puck" and [s["voice"] for s in seen] == ["am_puck"] * 3
     assert all("reference" not in s for s in seen)
 
 
@@ -812,7 +990,7 @@ def test_a_fallback_engine_without_the_voice_speaks_the_one_sharing_most_tags(
         )
     # narrator is a clip; k takes none, so heart speaks: it shares "warm" with narrator
     assert (engine, spoke) == ("http://k", "heart")
-    assert [s["host"] for s in seen] == ["c", "k", "k"] and seen[1]["voice"] == "af_heart"
+    assert [s["host"] for s in seen] == ["c", "k", "k", "k"] and seen[1]["voice"] == "af_heart"
 
 
 def test_an_engine_with_no_voice_sharing_a_tag_speaks_its_default(assets: Path) -> None:

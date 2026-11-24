@@ -164,3 +164,35 @@ def test_idle_unload_waits_for_a_take_in_progress(
     with server.tts_lock:
         assert not server.unload_idle(now=100.0)
     assert server.unload_idle(now=100.0)
+
+
+class Asr:
+    """faster-whisper's face: it heard "who sleeps" and then nothing, the take cut off."""
+
+    def transcribe(self, *_: Any, **__: Any) -> tuple[list[Any], Any]:
+        class W:
+            def __init__(self, word: str, start: float, end: float) -> None:
+                self.word, self.start, self.end = word, start, end
+
+        class S:
+            words = [W(" Who", 0.0, 0.4), W(" sleeps?", 0.4, 0.9)]
+
+        class Info:
+            duration = 2.0
+
+        return [S()], Info()
+
+
+def test_align_times_every_word_of_the_text_and_says_which_it_heard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(server.models, "asr", Asr())
+    r = TestClient(server.app).post(
+        "/v1/align", data={"text": "Who sleeps? Good night."}, files={"file": ("t.wav", b"x")}
+    )
+    assert r.status_code == 200, r.text
+    assert [t["word"] for t in r.json()["timestamps"]] == ["Who", "sleeps?", "Good", "night."]
+    assert r.json()["heard"] == [
+        {"word": "Who", "start_time": 0.0, "end_time": 0.4},
+        {"word": "sleeps?", "start_time": 0.4, "end_time": 0.9},
+    ]

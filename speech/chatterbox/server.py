@@ -7,7 +7,9 @@ POST /v1/audio/speech  OpenAI-style JSON {"input", "voice", "response_format": "
                        use), which takes `exaggeration`, `cfg_weight` and `temperature`; any
                        other model is Turbo, which takes `temperature` only
 POST /v1/align         form fields `file` (audio) and `text`: {"timestamps": [{"word", "start_time",
-                       "end_time"}]}, the shape Kokoro-FastAPI's captioned speech returns
+                       "end_time"}]}, the shape Kokoro-FastAPI's captioned speech returns, each
+                       word of the text timed, and `heard`, the words Whisper heard in that shape,
+                       so a caller can tell what was never said
 GET  /health           ok once the server is up, with `loaded` (the models in memory), the
                        delivery `tags` Turbo understands written in brackets in the input, as
                        "[whispering] Who sleeps?", `clips: true`, since it takes a reference clip,
@@ -229,14 +231,13 @@ def speak(req: Speech, clip: bytes | None) -> Response:
     return Response(buf.getvalue(), media_type="audio/wav")
 
 
+def _stamps(words: list[tuple[str, float, float]]) -> list[dict[str, Any]]:
+    return [{"word": w, "start_time": start, "end_time": end} for w, start, end in words]
+
+
 @app.post("/v1/align")
 def align(file: UploadFile, text: str = Form()) -> dict[str, list[dict[str, Any]]]:
     with asr_lock:
         segments, info = models["asr"].transcribe(file.file, word_timestamps=True, language="en")
         heard = [(w.word.strip(), w.start, w.end) for s in segments for w in s.words or []]
-    return {
-        "timestamps": [
-            {"word": w, "start_time": start, "end_time": end}
-            for w, start, end in match_words(text, heard, info.duration)
-        ]
-    }
+    return {"timestamps": _stamps(match_words(text, heard, info.duration)), "heard": _stamps(heard)}

@@ -85,6 +85,10 @@ HEARD: dict[bytes, list[tuple[str, float, float]]] = {}
 """What an aligner hears in each take `said` made: its words."""
 
 
+WHOLE = {"ok": True, "cut": False, "coverage": 1.0, "missing": []}
+"""What `hearing` says of a part heard whole."""
+
+
 def form_text(request: httpx.Request) -> str:
     return request.content.split(b'name="text"\r\n\r\n')[1].split(b"\r\n")[0].decode()
 
@@ -531,7 +535,7 @@ def test_a_take_ending_early_with_its_last_words_unheard_fails_the_check() -> No
     words = [f"w{i}" for i in range(40)]
     heard = [(w, 0.1 + 0.5 * i, 0.5 + 0.5 * i) for i, w in enumerate(words)]
     whole = sp.hearing(words, heard, 20.0)
-    assert whole == {"ok": True, "coverage": 1.0, "missing": []}
+    assert whole == WHOLE
     # 38 of 40 heard is 95%, but not the last two words: cut short
     assert sp.hearing(words, heard[:-2], 20.0)["ok"] is False
     # every word heard, then 5 s of babble after the last one: not said as written
@@ -551,7 +555,7 @@ def test_a_take_ending_early_with_its_last_words_unheard_fails_the_check() -> No
     digits = "100 ,000 clicks over 64 partitions is 1 ,500 each, 200, 200 bytes or fifty percent"
     digits += " of one ad"
     stamps = [(w, float(i), i + 1.0) for i, w in enumerate(digits.split())]
-    assert sp.hearing(spelled, stamps, len(stamps)) == {"ok": True, "coverage": 1.0, "missing": []}
+    assert sp.hearing(spelled, stamps, len(stamps)) == WHOLE
     assert [t for _, t in sp._spoken("one two three".split())] == ["1", "2", "3"]
     # what Whisper really heard on SystemDesign's s07: words misheard, none left out
     want = "The sink is where people slip. Replays are safe because writes are idempotent.".split()
@@ -571,17 +575,16 @@ def test_digits_with_a_scale_word_or_a_decimal_are_heard_as_the_number_spelled()
         stamps = [(w, float(i), i + 1.0) for i, w in enumerate(said.split())]
         return sp.hearing(want.split(), stamps, len(stamps))
 
-    whole = {"ok": True, "coverage": 1.0, "missing": []}
     line = "Assume ten million payments a day, with a tenfold peak."
-    assert heard(line, "Assume 10 million payments a day, with a tenfold peak.") == whole
-    assert heard(line, "Assume 10 ,000 ,000 payments a day, with a tenfold peak.") == whole
-    assert heard("about one point two million rows", "about 1.2 million rows") == whole
-    assert heard("about seven point two kilobytes each", "about 7.2 kilobytes each") == whole
-    assert heard("twenty two billion lines a year", "22 billion lines a year") == whole
-    assert heard("eighty six thousand four hundred seconds", "86 ,400 seconds") == whole
-    assert heard("about twelve hundred a second", "about 1 ,200 a second") == whole
-    assert heard("about twelve hundred a second", "about 1200 a second") == whole
-    assert heard("raised five billion dollars", "raised $5 billion dollars") == whole
+    assert heard(line, "Assume 10 million payments a day, with a tenfold peak.") == WHOLE
+    assert heard(line, "Assume 10 ,000 ,000 payments a day, with a tenfold peak.") == WHOLE
+    assert heard("about one point two million rows", "about 1.2 million rows") == WHOLE
+    assert heard("about seven point two kilobytes each", "about 7.2 kilobytes each") == WHOLE
+    assert heard("twenty two billion lines a year", "22 billion lines a year") == WHOLE
+    assert heard("eighty six thousand four hundred seconds", "86 ,400 seconds") == WHOLE
+    assert heard("about twelve hundred a second", "about 1 ,200 a second") == WHOLE
+    assert heard("about twelve hundred a second", "about 1200 a second") == WHOLE
+    assert heard("raised five billion dollars", "raised $5 billion dollars") == WHOLE
 
     def tokens(words: str) -> list[str]:
         return [t for _, t in sp._spoken(words.split())]
@@ -590,6 +593,56 @@ def test_digits_with_a_scale_word_or_a_decimal_are_heard_as_the_number_spelled()
     assert tokens("10 20 million") == ["10", "20000000"]
     assert tokens("ten million") == tokens("10 million") == ["10000000"]
     assert tokens("the end point is a POST") == ["the", "end", "point", "is", "a", "post"]
+
+
+def test_letters_spelled_apart_are_heard_as_the_word_whisper_writes() -> None:
+    """A script spells "G P S" for the engine; Whisper writes "GPS" (SystemDesign's
+    ride-hailing video failed its voice stage on it, Kriflow/packages#16)."""
+
+    def heard(want: str, said: str) -> dict[str, Any]:
+        stamps = [(w, float(i), i + 1.0) for i, w in enumerate(said.split())]
+        return sp.hearing(want.split(), stamps, len(stamps))
+
+    assert heard("Each driver sends G P S pings.", "Each driver sends GPS pings.") == WHOLE
+    assert heard("Call the A P I first.", "Call the API first.") == WHOLE
+    assert heard("Write it in S Q L.", "Write it in SQL.") == WHOLE
+    assert heard("Peak Q P S is high.", "Peak QPS is high.") == WHOLE
+    assert heard("Each driver sends GPS pings.", "Each driver sends G.P.S. pings.") == WHOLE
+    assert heard("Use a load balancer here.", "Use a loadbalancer here.") == WHOLE
+    assert heard("Send an e-mail.", "Send an email.") == WHOLE
+    assert heard("Okay, ship it.", "OK, ship it.") == WHOLE
+
+
+def test_a_take_missing_words_but_not_its_end_is_kept_with_a_warning() -> None:
+    """Coverage under COVERAGE with the tail heard is not a cut-off: every try is voiced, the
+    best kept, and the stage goes on with a warning naming what was missed."""
+    scene = script_of("Riders and drivers meet where the map says they should.")[0]
+    tries: list[int | None] = []
+
+    def take(say: str, text: str, seed: int | None) -> tuple[bytes, Any, Any]:
+        tries.append(seed)
+        audio, stamps = said(text)
+        # "drivers" (and "meet" on the first try) not heard; the end heard as said
+        drop = {2, 3} if seed == 1 else {2}
+        return audio, stamps, [s for i, s in enumerate(stamps) if i not in drop]
+
+    _, timing = sp._scene_take(scene, set(), 1, take)
+    assert len(tries) == sp.TRIES
+    assert timing["check"]["coverage"] == 0.9
+    assert timing["check"]["warnings"] == [
+        "scene s13, line 1: kept the best of 4 tries, 90% of its words heard; missing: drivers"
+    ]
+
+
+def test_a_take_heard_under_the_floor_or_without_its_end_still_fails() -> None:
+    words = [f"w{i}" for i in range(10)]
+    stamps = [(w, 0.1 + 0.5 * i, 0.5 + 0.5 * i) for i, w in enumerate(words)]
+    gappy = sp.hearing(words, [s for i, s in enumerate(stamps) if i not in (2, 3, 4, 5)], 5.0)
+    assert gappy["ok"] is False and gappy["cut"] is True  # 60%: under FLOOR
+    tail = sp.hearing(words, stamps[:-2], 5.0)
+    assert tail["ok"] is False and tail["cut"] is True
+    some = sp.hearing(words, [s for i, s in enumerate(stamps) if i != 3], 5.0)
+    assert some == {"ok": False, "cut": False, "coverage": 0.9, "missing": ["w3"]}
 
 
 def test_a_line_never_said_whole_fails_the_stage_naming_scene_line_and_missing_words() -> None:

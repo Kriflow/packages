@@ -83,7 +83,10 @@ connector tries them in the order its Speech engines Setting (`SPEECH_ENDPOINTS`
   give `{"timestamps": [{"word", "start_time", "end_time"}]}` in seconds, the shape Kokoro-FastAPI's
   `/dev/captioned_speech` returns with its speech. faster-whisper (`small.en`, CPU) hears the words
   and they are matched back to the text, so the text's spelling wins; words it missed or merged
-  share the gap between their heard neighbours. Speech takes an optional `seed` for repeatable
+  share the gap between their heard neighbours. Since speech 1.3.5 it also answers `heard`, the
+  words faster-whisper heard in the same shape, which the connector checks every take against
+  (rebuild the engine after upgrading: `docker compose -f speech/compose.yaml --profile
+  chatterbox-gpu up -d --build`). Speech takes an optional `seed` for repeatable
   takes; it returns 16-bit WAV only, and Turbo speaks its built-in voice whatever `voice` says,
   unless the request is a multipart form (the same fields) with a `reference` file: then it
   clones that clip (5 to 10 s of speech; a shorter one is a 400), conditioning Turbo once per
@@ -153,7 +156,21 @@ its Setup, a JSON schema of its params, inputs, outputs, the `script` type, its 
     lists it; for the others it is taken out, so no engine reads a direction aloud.
   - Anything else in brackets is spoken without them and listed in the line's `unrecognized`.
   - Words for alignment and captions never hold a tag or a pause.
-- One take per scene. The engines are tried in the order of `SPEECH_ENDPOINTS` (or of
+- One take per scene, voiced line by line: Chatterbox stops generating at about 33 s, so a whole
+  scene sent at once lost its ending (Kriflow/packages#9). A line over 50 words (about 20 s) is
+  voiced in parts split at sentences, then clauses. Each part is trimmed to its sound (0.05 s
+  before, 0.15 s after); the parts of a line are joined with 0.2 s of silence between them, and
+  the lines with their `pause_after`.
+- Every part is heard back by Whisper: the engine's own `/v1/align`, or for an engine without
+  one (Kokoro) the first engine of the list that has it. The part passes when at least 95% of
+  its words were heard (without case or punctuation; a word heard spelled a little differently,
+  or two run together, counts), two of its last three among them, the last ending within 1.5 s
+  of its sound, which does not end cut off mid-sound. A part that fails is voiced again with the
+  next seed (a random one without `seed`), up to 4 tries, and the best kept; still failing, the
+  stage fails naming the scene, line and words missing. With no engine to hear them (Kokoro
+  alone, or a Chatterbox engine from before 1.3.5) the takes are kept as before and `warnings`
+  says they were not checked, rather than pass them quietly.
+- The engines are tried in the order of `SPEECH_ENDPOINTS` (or of
   `params.engines`, which may only reorder or narrow that list, since the script is sent there);
   when one fails, the whole run is redone on the next, so one video never mixes two voices.
   `seed` goes to the engine; the voice is resolved per engine (Voices, below).
@@ -168,11 +185,15 @@ its Setup, a JSON schema of its params, inputs, outputs, the `script` type, its 
   `pause_after`, `directions` (its tags, as `["whispering"]`), `unrecognized`, `words` in
   Remotion's `Caption` shape (`text` with the space before it,
   `startMs` and `endMs` from the take's start, `timestampMs` and `confidence` null), and
-  `cut_in` and `cut_out` (seconds into the take). A cut between two lines sits in the middle of
-  the quietest 10 ms between them; the take keeps 0.05 s before its first word and 0.15 s after
-  its last. A line whose cut has no silence (a gap under 10 ms or louder than about -34 dBFS)
-  has `joined_next: true`, and the call's `joined` and `message` name it: cut there and the
-  word edge shows, so keep the two lines together or voice them again.
+  `cut_in` and `cut_out` (seconds into the take): the line's own sound, 0.05 s before its first
+  sound and 0.15 s after its last, so the take's silence between two lines (their `pause_after`)
+  falls outside both and a build adds the pause itself. A line whose cut or the next line's is
+  not silence after all (the 10 ms inside it louder than about -34 dBFS) has `joined_next:
+  true`, and the call's `joined` and `message` name it: cut there and the word edge shows, so
+  keep the two lines together or voice them again. Each take's `check` holds `coverage` (the
+  share of its words Whisper heard, null when nothing could hear them), `retries` and its
+  `warnings` (parts said whole only on a later try, a part ending mid-sound, takes not checked),
+  which also join the file's `warnings`.
 - The workflow check wants an input and an output and refuses params outside the Manifest's.
 - The run page's speech panel shows the voice that spoke, the one chosen when the engine could
   not speak it, and the warnings.

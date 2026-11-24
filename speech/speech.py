@@ -7,6 +7,11 @@ run is redone on the next, so one video never mixes two voices. Word times come 
 when the engine offers Kokoro-FastAPI's `/dev/captioned_speech`, else from the engine's
 `/v1/align`; either way they are matched back to the script, whose spelling wins.
 
+A take is voiced line by line, a long line in parts (`parts`), since Chatterbox stops generating
+at about 33 s, and every part is heard back by Whisper (an engine's `/v1/align`, `hearing`): one
+it did not say whole is voiced again with the next seed, and the parts join on silence into the
+scene's take.
+
 A world's voices are its `voices/` Owned Folder, clips voices.json describes (`catalog`): the
 connector answers its `script` type for that world with a `voice` to choose from
 (`speech_types`), and voices each script in the voice its stage or the script names, as each
@@ -60,12 +65,21 @@ WAITING = "Waiting for the GPU"
 PAUSE = 0.3
 """Seconds after a line when the script does not say."""
 WINDOW = 0.01
-"""A cut point is the middle of the quietest window this long between two lines."""
+"""A cut is checked for silence over a window this long."""
 SILENCE = 0.02
 """RMS (of full scale, about -34 dBFS) under which that window counts as silence."""
 # ponytail: one fixed threshold; per-engine noise floors if a quiet join gets flagged.
 LEAD_IN, TAIL = 0.05, 0.15
-"""Seconds kept before a take's first word and after its last."""
+"""Seconds kept before a part's first sound and after its last."""
+MAX_WORDS = 50
+"""The most words an engine is asked to voice at once, about 20 s of speech: Chatterbox stops
+generating at about 33 s, so a longer line goes in parts split at sentences, then clauses."""
+INNER = 0.2
+"""Seconds of silence between two parts of one line, beside the LEAD_IN and TAIL each keeps."""
+COVERAGE, END_SLACK = 0.95, 1.5
+"""A part is said whole when Whisper heard this share of its words, two of its last three among
+them, the last heard ending within END_SLACK seconds of its last sound (Whisper's end times run
+early at a sentence's end)."""
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,60}$")
 _FENCE = re.compile(r"```json[ \t]*\n(.*?)\n```", re.S)
@@ -557,32 +571,42 @@ def decode(wav: bytes) -> tuple[array, int]:
     return samples[::channels], rate
 
 
-def quietest(samples: array, rate: int, a: float, b: float) -> tuple[float, bool]:
-    """The middle of the quietest `WINDOW` between `a` and `b` seconds, and whether it is
-    silent. A gap shorter than the window has no silence: the cut goes in its middle."""
-    n, step = max(1, round(rate * WINDOW)), max(1, rate // 1000)
-    i0, i1 = int(a * rate), min(int(b * rate), len(samples))
-    if i1 - i0 < n:
-        return (a + b) / 2, False
-    energy = list(accumulate((s * s for s in samples[i0:i1]), initial=0))
-    best = min(range(0, i1 - i0 - n + 1, step), key=lambda i: energy[i + n] - energy[i])
-    rms = math.sqrt((energy[best + n] - energy[best]) / n) / 32768
-    return (i0 + best + n / 2) / rate, rms <= SILENCE
+def _quiet(samples: array, rate: int, at: float) -> bool:
+    """Whether the `WINDOW` from `at` seconds is silence (RMS at most SILENCE)."""
+    i = max(0, int(at * rate))
+    window = samples[i : i + max(1, round(rate * WINDOW))]
+    return not window or math.sqrt(sum(s * s for s in window) / len(window)) / 32768 <= SILENCE
+
+
+def sounding(samples: array, rate: int) -> tuple[float, float, bool]:
+    """Seconds from a part's first 10 ms window louder than QUIET to the end of its last, and
+    whether its sound stops before the audio does: one that does not was cut off mid-sound."""
+    n = max(1, round(rate * WINDOW))
+    energy = list(accumulate((s * s for s in samples), initial=0))
+    floor = (QUIET * 32768) ** 2 * n
+    loud = [i for i in range(0, len(samples) - n + 1, n) if energy[i + n] - energy[i] > floor]
+    if not loud:
+        return 0.0, len(samples) / rate, True
+    return loud[0] / rate, (loud[-1] + n) / rate, loud[-1] + 2 * n <= len(samples)
 
 
 def take_timings(
-    scene: dict[str, Any], wav: bytes, heard: list[tuple[str, float, float]]
+    scene: dict[str, Any],
+    wav: bytes,
+    heard: list[tuple[str, float, float]],
+    bounds: list[tuple[float, float]],
 ) -> dict[str, Any]:
     """One take's entry in timings.json: its duration, and per line its words in Remotion's
     Caption shape (ms from the take's start, each word's text carrying the space before it),
-    `cut_in` and `cut_out` seconds, and `joined_next` when it runs into the next line with no
-    silence to cut in."""
+    `cut_in` and `cut_out` seconds (its `bounds` in the take, which `_scene_take` put on
+    silence), and `joined_next` when the audio at its cut_out or the next line's cut_in is not
+    silence after all."""
     samples, rate = decode(wav)
     duration = len(samples) / rate
     words = [(li, w) for li, line in enumerate(scene["lines"]) for w in line["text"].split()]
     spans = match([w for _, w in words], heard, duration)
     lines: list[dict[str, Any]] = []
-    for li, line in enumerate(scene["lines"]):
+    for li, (line, (cut_in, cut_out)) in enumerate(zip(scene["lines"], bounds, strict=True)):
         idx = [i for i, (wl, _) in enumerate(words) if wl == li]
         captions = [
             {
@@ -594,17 +618,12 @@ def take_timings(
             }
             for i in idx
         ]
-        lines.append(
-            {**line, "first": spans[idx[0]][0], "last": spans[idx[-1]][1], "words": captions}
+        lines.append({**line, "cut_in": cut_in, "cut_out": cut_out, "words": captions})
+    for before, after in zip(lines, [*lines[1:], None], strict=True):
+        before["joined_next"] = after is not None and not (
+            _quiet(samples, rate, before["cut_out"] - WINDOW)
+            and _quiet(samples, rate, after["cut_in"])
         )
-    lines[0]["cut_in"] = max(0.0, lines[0]["first"] - LEAD_IN)
-    lines[-1]["cut_out"] = min(duration, lines[-1]["last"] + TAIL)
-    for line in lines:
-        line["joined_next"] = False
-    for before, after in zip(lines, lines[1:], strict=False):
-        cut, silent = quietest(samples, rate, before["last"], after["first"])
-        before["cut_out"] = after["cut_in"] = round(cut, 3)
-        before["joined_next"] = not silent
     keys = ("text", "pause_after", "directions", "unrecognized", "cut_in", "cut_out")
     keys += ("joined_next", "words")
     return {
@@ -629,6 +648,10 @@ def _speak(http: httpx.Client, base: str, body: dict[str, Any], clip: bytes | No
     return r.content
 
 
+Stamps = list[tuple[str, float, float]]
+"""Words and when they were said, (word, start, end) in seconds."""
+
+
 def _take(
     http: httpx.Client,
     base: str,
@@ -638,10 +661,11 @@ def _take(
     seed: int | None,
     clip: bytes | None = None,
     options: dict[str, Any] | None = None,
-) -> tuple[bytes, list[tuple[str, float, float]]]:
+) -> tuple[bytes, Stamps, Stamps | None]:
     """One take of `say` from the engine at `base`, with the words of `text` (`say` without its
-    tags) it spoke and when. A `clip` goes up with the speech request as `reference`, and the
-    voice's `options` (its model and delivery) in the body."""
+    tags) it spoke and when, and the words its aligner heard (None from a captioned engine, or an
+    aligner before speech 1.3.5's). A `clip` goes up with the speech request as `reference`, and
+    the voice's `options` (its model and delivery) in the body."""
     body: dict[str, Any] = {"model": "tts-1", "input": say, "response_format": "wav"}
     body.update(options or {})
     if voice:
@@ -654,13 +678,98 @@ def _take(
     if r is not None and r.status_code != 404:
         r.raise_for_status()
         answer = r.json()
-        audio, stamps = base64.b64decode(answer["audio"]), answer["timestamps"]
-    else:
-        audio = _speak(http, base, body, clip)
-        a = http.post(f"{base}/v1/align", data={"text": text}, files={"file": ("take.wav", audio)})
-        a.raise_for_status()
-        stamps = a.json()["timestamps"]
-    return audio, [(str(t["word"]), float(t["start_time"]), float(t["end_time"])) for t in stamps]
+        return base64.b64decode(answer["audio"]), _stamps(answer["timestamps"]), None
+    audio = _speak(http, base, body, clip)
+    return audio, *_align(http, base, audio, text)
+
+
+def _stamps(found: list[dict[str, Any]]) -> Stamps:
+    return [(str(t["word"]), float(t["start_time"]), float(t["end_time"])) for t in found]
+
+
+def _align(http: httpx.Client, base: str, audio: bytes, text: str) -> tuple[Stamps, Stamps | None]:
+    """The engine's `/v1/align` of `audio`: the words of `text` timed, and the words it heard
+    (None from an aligner before speech 1.3.5's, which does not say)."""
+    a = http.post(f"{base}/v1/align", data={"text": text}, files={"file": ("take.wav", audio)})
+    a.raise_for_status()
+    answer = a.json()
+    heard = answer.get("heard")
+    return _stamps(answer["timestamps"]), _stamps(heard) if isinstance(heard, list) else None
+
+
+def _ear(http: httpx.Client, engines: list[str]) -> Callable[[bytes, str], Stamps | None]:
+    """What Whisper hears in a take from a captioned engine (Kokoro): the first of `engines` whose
+    `/v1/align` says what it heard, found on the first take and asked for every one after; None
+    when no engine does, and the takes go unchecked."""
+    found: list[str | None] = []
+
+    def hear(audio: bytes, text: str) -> Stamps | None:
+        if found:
+            return _align(http, found[0], audio, text)[1] if found[0] else None
+        for base in engines:
+            with contextlib.suppress(httpx.HTTPError, ValueError, KeyError, TypeError):
+                if (heard := _align(http, base, audio, text)[1]) is not None:
+                    found.append(base)
+                    return heard
+        found.append(None)
+        return None
+
+    return hear
+
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+_CLAUSE = re.compile(r"(?<=[,;:\u2013\u2014])\s+")
+
+
+def _count(say: str) -> int:
+    return len(_TAG.sub("", say).split())
+
+
+def _pieces(say: str, most: int, splitters: tuple[re.Pattern[str], ...]) -> list[str]:
+    if _count(say) <= most:
+        return [say]
+    if not splitters:
+        # ponytail: a run of over `most` words with no clause mark is cut by count; a tag with
+        # a space ([clear throat]) inside such a run may be split
+        words = say.split()
+        return [" ".join(words[i : i + most]) for i in range(0, len(words), most)]
+    return [p for s in splitters[0].split(say) for p in _pieces(s, most, splitters[1:])]
+
+
+def parts(say: str, most: int = MAX_WORDS) -> list[str]:
+    """A line as the engine is asked to voice it: whole when it is at most `most` words, else in
+    parts of at most that many, split at sentences, then clauses, then words, and packed back
+    together while they fit."""
+    out: list[str] = []
+    for piece in _pieces(say, most, (_SENTENCE, _CLAUSE)):
+        if out and (_count(out[-1]) + _count(piece) <= most or not _count(piece)):
+            out[-1] += " " + piece
+        else:
+            out.append(piece)
+    return out
+
+
+def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
+    """Whether a part was said whole: `ok` when Whisper `heard` at least COVERAGE of the words
+    it should say (`want`, compared without case or punctuation; one heard spelled a little
+    differently, as "Reddis", or run together, as "Goodnight", counts) and two of its last
+    three, the last heard word ending within END_SLACK of its last sound at `end` seconds. With
+    the share heard as `coverage` and the words it did not hear as `missing`."""
+    a = [_norm(w) for w in want]
+    b = [w for h in heard if (w := _norm(h[0]))]
+    found = [not w for w in a]  # a word of only punctuation is never heard
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        close = difflib.SequenceMatcher(a="".join(a[i1:i2]), b="".join(b[j1:j2])).ratio() >= 0.8
+        if op == "equal" or op == "replace" and close:
+            found[i1:i2] = [True] * (i2 - i1)
+    coverage = sum(found) / len(found) if found else 1.0
+    tail = found[-3:]
+    ends = bool(heard) and heard[-1][2] >= end - END_SLACK
+    return {
+        "ok": coverage >= COVERAGE and sum(tail) >= min(2, len(tail)) and ends,
+        "coverage": round(coverage, 3),
+        "missing": [w for w, f in zip(want, found, strict=True) if not f],
+    }
 
 
 def _speaker(
@@ -698,23 +807,122 @@ def voice_run(
     that spoke and the options it spoke with, sent only with a clip, since an engine that speaks
     a preset (Kokoro) knows no Chatterbox model. `voice` names one of the catalog's `voices`,
     resolved per engine (`resolve`), or else is the engine's own voice; "" is the engine's
-    default. Raises ToolError naming each engine's failure."""
+    default. Every part is heard back (`_scene_take`). Raises ToolError naming each engine's
+    failure, or the first part an engine did not say whole in TRIES tries."""
     voices = voices or []
     failures, on_gpu = [], gpu_engines()
     for base in engines:
         try:
             tags, spoke, own, clip, options = _speaker(http, base, voice, voices)
-            takes = []
-            for scene in scenes:
-                say = " ".join(for_engine(line["say"], tags) for line in scene["lines"])
-                text = " ".join(line["text"] for line in scene["lines"])
-                with _slot("gpu", _waits) if base in on_gpu else contextlib.nullcontext():
-                    audio, heard = _take(http, base, say, text, own, seed, clip, options)
-                takes.append((audio, take_timings(scene, audio, heard)))
-            return base, spoke, options, takes
+            take = _taker(http, base, own, clip, options, base in on_gpu, _ear(http, engines))
+            return base, spoke, options, [_scene_take(sc, tags, seed, take) for sc in scenes]
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             failures.append(f"{base}: {type(exc).__name__}: {exc}")
     raise ToolError("no speech engine voiced the script. " + "; ".join(failures))
+
+
+def _taker(
+    http: httpx.Client,
+    base: str,
+    own: str,
+    clip: bytes | None,
+    options: dict[str, Any],
+    on_gpu: bool,
+    ear: Callable[[bytes, str], Stamps | None],
+) -> Callable[[str, str, int | None], tuple[bytes, Stamps, Stamps | None]]:
+    """How `_scene_take` voices a part on the engine at `base` (`_take`), holding a gpu Slot when
+    it is `on_gpu`; a captioned engine's take is heard by the `ear`."""
+
+    def take(say: str, text: str, seed: int | None) -> tuple[bytes, Stamps, Stamps | None]:
+        with _slot("gpu", _waits) if on_gpu else contextlib.nullcontext():
+            audio, stamps, heard = _take(http, base, say, text, own, seed, clip, options)
+        return audio, stamps, heard if heard is not None else ear(audio, text)
+
+    return take
+
+
+UNCHECKED = (
+    "takes not checked by ear: no engine in the list answers /v1/align with the words it heard"
+    " (Chatterbox from speech 1.3.5 does), so a take cut short goes unnoticed"
+)
+
+
+def _scene_take(
+    scene: dict[str, Any],
+    tags: set[str],
+    seed: int | None,
+    take: Callable[[str, str, int | None], tuple[bytes, Stamps, Stamps | None]],
+) -> tuple[bytes, dict[str, Any]]:
+    """A scene's take and its timings, voiced by `take` (say, text, seed: the audio, the words
+    of `text` timed, the words heard or None) part by part (`parts`). Each part is heard back
+    (`hearing`); one not said whole is voiced again with the next seed, up to TRIES times, and
+    the best kept, else a ToolError names the scene, line and words missing. Each part is
+    trimmed to its sound (`sounding`) and the parts joined, INNER seconds of silence between two
+    of a line and its `pause_after` between lines. The timings' `check` says the share of the
+    script's words heard (`coverage`, null when no engine could hear them), the `retries` and
+    `warnings`."""
+    out, stamps, bounds, rate = array("h"), [], [], 0
+    said = heard_words = retries = 0
+    warnings: list[str] = []
+    for li, line in enumerate(scene["lines"], 1):
+        begin = len(out)
+        pieces = parts(for_engine(line["say"], tags))
+        for pi, say in enumerate(pieces, 1):
+            text = " ".join(_TAG.sub("", say).split())
+            where = f"scene {scene['id']}, line {li}" + (f", part {pi}" if len(pieces) > 1 else "")
+            tried = []
+            for k in range(TRIES):
+                audio, timed, heard = take(say, text, None if seed is None else seed + k)
+                samples, r = decode(audio)
+                first, last, stops = sounding(samples, r)
+                verdict = hearing(text.split(), heard, last) if heard is not None else None
+                if verdict and not stops:  # cut off mid-sound: not said whole either
+                    verdict["ok"] = False
+                tried.append((verdict, samples, r, timed, first, last, stops))
+                if verdict is None or verdict["ok"]:
+                    break
+            verdict, samples, r, timed, first, last, stops = max(
+                tried, key=lambda t: (t[0] is None or t[0]["ok"], t[0] and t[0]["coverage"])
+            )
+            retries += len(tried) - 1
+            if verdict is None:
+                warnings.append(UNCHECKED)
+            elif not verdict["ok"]:
+                raise ToolError(
+                    f"{where}: the engine did not say it whole in {TRIES} tries (at best"
+                    f" {verdict['coverage']:.0%} of its words heard); missing:"
+                    f" {' '.join(verdict['missing']) or 'its last words'}"
+                )
+            else:
+                n = len(text.split())
+                said, heard_words = said + n, heard_words + round(verdict["coverage"] * n)
+                if len(tried) > 1:
+                    warnings.append(f"{where}: said whole on try {len(tried)}")
+            if not stops:  # an unchecked take, kept as before
+                warnings.append(f"{where}: its audio ends mid-sound")
+            if rate and r != rate:
+                raise ValueError(f"{where}: the engine changed its sample rate ({rate} to {r})")
+            rate = r
+            if pi > 1:
+                out.extend([0] * round(INNER * rate))
+            a = max(0.0, first - LEAD_IN)
+            b = min(len(samples) / rate, last + TAIL)
+            at = len(out) / rate
+            stamps += [(w, at + min(max(s - a, 0.0), b - a), at + min(max(e - a, 0.0), b - a))
+                       for w, s, e in timed]  # fmt: skip
+            out.extend(samples[int(a * rate) : int(b * rate)])
+        bounds.append((begin / rate, len(out) / rate))
+        if li < len(scene["lines"]):
+            out.extend([0] * round(line["pause_after"] * rate))
+    wav = encode(out, rate)
+    timing = take_timings(scene, wav, stamps, bounds)
+    coverage = round(heard_words / said, 3) if said else None
+    timing["check"] = {
+        "coverage": coverage,
+        "retries": retries,
+        "warnings": [*dict.fromkeys(warnings)],
+    }
+    return wav, timing
 
 
 # The vocal-effect mode: a short non-word utterance ("uhhh", a moan, a groan) in a voice, each
@@ -1077,6 +1285,7 @@ def speech(
         asked = ""
     with _client() as http:
         engine, spoke, options, takes = voice_run(http, scenes, order, asked, seed, voices)
+    warnings += dict.fromkeys(w for _, t in takes for w in t["check"]["warnings"])
     out = Path(output_path)
     folder = out.parent / "narration"
     folder.mkdir(parents=True, exist_ok=True)

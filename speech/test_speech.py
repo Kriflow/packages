@@ -544,11 +544,15 @@ def test_a_take_ending_early_with_its_last_words_unheard_fails_the_check() -> No
         == 1.0
     )
     # Whisper writes numbers in digits where the script spells them, and the other way round
-    spelled = "around two hundred thousand events, twenty-five or 50% of 1,200".split()
-    digits = "around 200,000 events, 25 or fifty percent of one thousand two hundred".split()
-    stamps = [(w, float(i), i + 1.0) for i, w in enumerate(digits)]
-    assert sp.hearing(spelled, stamps, len(digits))["coverage"] == 1.0
-    assert sp._spoken("3.5") == ["three", "point", "five"]
+    spelled = (
+        "A hundred thousand clicks over sixty-four partitions is fifteen hundred each, two"
+        " hundred, two hundred bytes or 50% of one ad"
+    ).split()
+    digits = "100 ,000 clicks over 64 partitions is 1 ,500 each, 200, 200 bytes or fifty percent"
+    digits += " of one ad"
+    stamps = [(w, float(i), i + 1.0) for i, w in enumerate(digits.split())]
+    assert sp.hearing(spelled, stamps, len(stamps)) == {"ok": True, "coverage": 1.0, "missing": []}
+    assert [t for _, t in sp._spoken("one two three".split())] == ["1", "2", "3"]
 
 
 def test_a_line_never_said_whole_fails_the_stage_naming_scene_line_and_missing_words() -> None:

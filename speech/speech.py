@@ -754,32 +754,64 @@ _ONES = (
     " fifteen sixteen seventeen eighteen nineteen"
 ).split()
 _TENS = "twenty thirty forty fifty sixty seventy eighty ninety".split()
-_SCALES = ((10**9, "billion"), (10**6, "million"), (1000, "thousand"), (100, "hundred"))
+_VALUES = {w: n for n, w in enumerate(_ONES)} | {w: 20 + 10 * n for n, w in enumerate(_TENS)}
+_SCALES = {"hundred": 100, "thousand": 1000, "million": 10**6, "billion": 10**9}
 
 
-def _number(n: int) -> list[str]:
-    """`n` in words, as a script spells it: 200000 is two hundred thousand."""
-    if n < 20:
-        return [_ONES[n]]
-    if n < 100:
-        return [_TENS[n // 10 - 2]] + ([_ONES[n % 10]] if n % 10 else [])
-    size, name = next((v, k) for v, k in _SCALES if n >= v)
-    return [*_number(n // size), name] + (_number(n % size) if n % size else [])
-
-
-def _spoken(word: str) -> list[str]:
-    """A word as compared when a take is heard back: without case or punctuation, hyphens
-    apart, and a number in words, since Whisper writes "200,000" where a script says "two hundred
-    thousand" (and "50%" where it says "fifty percent")."""
-    out: list[str] = []
-    for piece in word.lower().split("-"):
-        number = re.fullmatch(r"\$?(\d[\d,]*)(?:\.(\d+))?(%?)", piece.strip(".,;:!?\"'()"))
-        if number and len(digits := number[1].replace(",", "")) < 13:
-            out += _number(int(digits))
-            out += ["point", *(_ONES[int(d)] for d in number[2])] if number[2] else []
-            out += ["percent"] if number[3] else []
-        elif norm := _norm(piece):
-            out.append(norm)
+def _spoken(words: list[str], heard: bool = False) -> list[tuple[list[int], str]]:
+    """Words as compared when a take is heard back, each token with the words it stands for:
+    without case or punctuation, hyphens apart, and a number as its value, since Whisper writes
+    "100,000" or "1,500" where a script says "a hundred thousand" or "fifteen hundred"
+    (`heard` words come as "100 ,000", joined first)."""
+    if heard:
+        words = re.sub(r"(\d) ,(?=\d)", r"\1,", " ".join(words)).split()
+    raw: list[tuple[int, str, bool]] = []  # (word, token, a clause ends after it)
+    for i, word in enumerate(words):
+        pieces = word.lower().split("-")
+        for k, piece in enumerate(pieces):
+            stop = k == len(pieces) - 1 and word[-1:] in ".,;:!?"
+            number = re.fullmatch(r"\$?(\d[\d,]*(?:\.\d+)?)(%?)", piece.strip(".,;:!?\"'()"))
+            if number:
+                raw.append((i, number[1].replace(",", ""), stop and not number[2]))
+                if number[2]:
+                    raw.append((i, "percent", stop))
+            elif norm := _norm(piece):
+                raw.append((i, norm, stop))
+    out: list[tuple[list[int], str]] = []
+    k = 0
+    while k < len(raw):
+        owners, total, current, n = [], 0, 0, k
+        while n < len(raw):
+            i, token, stop = raw[n]
+            scale = _SCALES.get(token)
+            a = token in ("a", "an") and n + 1 < len(raw) and raw[n + 1][1] in _SCALES
+            value = 1 if a else _VALUES.get(token)
+            if (
+                value is not None
+                and n > k
+                and not (
+                    current % 100 == 0 or current % 10 == 0 and current % 100 >= 20 and value < 10
+                )
+            ):
+                break  # "one two" is two numbers
+            if value is None and not (scale and n > k):
+                break
+            if scale == 100:
+                current = max(current, 1) * 100
+            elif scale:
+                total, current = total + max(current, 1) * scale, 0
+            else:
+                current += value or 0
+            owners.append(i)
+            n += 1
+            if stop:
+                break
+        if n > k:
+            out.append((owners, str(total + current)))
+            k = n
+        else:
+            out.append(([raw[k][0]], raw[k][1]))
+            k += 1
     return out
 
 
@@ -789,17 +821,18 @@ def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
     "Reddis", or run together, as "Goodnight", counts) and two of its last
     three, the last heard word ending within END_SLACK of its last sound at `end` seconds. With
     the share heard as `coverage` and the words it did not hear as `missing`."""
-    owner = [(i, t) for i, w in enumerate(want) for t in _spoken(w)]
+    owner = _spoken(want)
     a = [t for _, t in owner]
-    b = [t for h in heard for t in _spoken(h[0])]
+    b = [t for _, t in _spoken([h[0] for h in heard], heard=True)]
     hit = [False] * len(a)
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
         close = difflib.SequenceMatcher(a="".join(a[i1:i2]), b="".join(b[j1:j2])).ratio() >= 0.8
         if op == "equal" or op == "replace" and close:
             hit[i1:i2] = [True] * (i2 - i1)
     found = [True] * len(want)  # a word of only punctuation is never heard
-    for (i, _), h in zip(owner, hit, strict=True):
-        found[i] = found[i] and h
+    for (words, _), h in zip(owner, hit, strict=True):
+        for i in words:
+            found[i] = found[i] and h
     coverage = sum(found) / len(found) if found else 1.0
     tail = found[-3:]
     ends = bool(heard) and heard[-1][2] >= end - END_SLACK

@@ -77,10 +77,12 @@ MAX_WORDS = 50
 generating at about 33 s, so a longer line goes in parts split at sentences, then clauses."""
 INNER = 0.2
 """Seconds of silence between two parts of one line, beside the LEAD_IN and TAIL each keeps."""
-COVERAGE, END_SLACK = 0.95, 1.5
-"""A part is said whole when Whisper heard this share of its words, two of its last three among
+COVERAGE, FLOOR, END_SLACK = 0.95, 0.7, 1.5
+"""A part is said whole when Whisper heard COVERAGE of its words, two of its last three among
 them, the last heard ending within END_SLACK seconds of its last sound (Whisper's end times run
-early at a sentence's end)."""
+early at a sentence's end). It is cut off when it misses that end, or Whisper heard under FLOOR
+of its words: only a cut-off fails the stage; a part between FLOOR and COVERAGE is kept with a
+warning, since what Whisper writes differs from a script in more ways than a take cut short."""
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,60}$")
 _FENCE = re.compile(r"```json[ \t]*\n(.*?)\n```", re.S)
@@ -834,7 +836,17 @@ def _spoken(words: list[str], heard: bool = False) -> list[tuple[list[int], str]
         else:
             out.append(([raw[k][0]], raw[k][1]))
             k += 1
-    return out
+    # letters spelled apart, as a script writes "G P S" for the engine, are one word: "gps"
+    joined: list[tuple[list[int], str]] = []
+    run = False  # the token before was a single letter
+    for owners, token in out:
+        letter = len(token) == 1 and token.isalpha()
+        if letter and run:
+            joined[-1] = (joined[-1][0] + owners, joined[-1][1] + token)
+        else:
+            joined.append((owners, token))
+        run = letter
+    return joined
 
 
 def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
@@ -842,8 +854,10 @@ def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
     it should say (`want`, compared as `_spoken`; a word Whisper heard as one that sounds alike,
     as "sync" for "sink" or "Pre-plays" for "Replays", counts: only words it heard nothing
     for, or something unlike, are missing, as a take cut short has them) and two of its last
-    three, the last heard word ending within END_SLACK of its last sound at `end` seconds. With
-    the share heard as `coverage` and the words it did not hear as `missing`."""
+    three, the last heard word ending within END_SLACK of its last sound at `end` seconds; `cut`
+    when it was cut off (under FLOOR heard, or not that end). Letters spelled apart are one word
+    ("G P S" is "GPS"), and words that differ only in spaces count ("loadbalancer"). With the
+    share heard as `coverage` and the words it did not hear as `missing`."""
     owner = _spoken(want)
     a = [t for _, t in owner]
     b = [t for _, t in _spoken([h[0] for h in heard], heard=True)]
@@ -852,7 +866,8 @@ def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
         # ponytail: letters alike stand in for sounds alike; a phonetic key if mishearings slip
         alike = difflib.SequenceMatcher(a="".join(a[i1:i2]), b="".join(b[j1:j2])).ratio()
         close = alike >= 0.5 and abs((i2 - i1) - (j2 - j1)) <= 1
-        if op == "equal" or op == "replace" and close:
+        same = "".join(a[i1:i2]) == "".join(b[j1:j2])  # "load balancer", "loadbalancer"
+        if op == "equal" or op == "replace" and (close or same):
             hit[i1:i2] = [True] * (i2 - i1)
     found = [True] * len(want)  # a word of only punctuation is never heard
     for (words, _), h in zip(owner, hit, strict=True):
@@ -861,8 +876,10 @@ def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
     coverage = sum(found) / len(found) if found else 1.0
     tail = found[-3:]
     ends = bool(heard) and heard[-1][2] >= end - END_SLACK
+    cut = coverage < FLOOR or sum(tail) < min(2, len(tail)) or not ends
     return {
-        "ok": coverage >= COVERAGE and sum(tail) >= min(2, len(tail)) and ends,
+        "ok": coverage >= COVERAGE and not cut,
+        "cut": cut,
         "coverage": round(coverage, 3),
         "missing": [w for w, f in zip(want, found, strict=True) if not f],
     }
@@ -952,7 +969,8 @@ def _scene_take(
     """A scene's take and its timings, voiced by `take` (say, text, seed: the audio, the words
     of `text` timed, the words heard or None) part by part (`parts`). Each part is heard back
     (`hearing`); one not said whole is voiced again with the next seed, up to TRIES times, and
-    the best kept, else a ToolError names the scene, line and words missing. Each part is
+    the best kept: still cut off (`hearing`), a ToolError names the scene, line and words
+    missing; only short of COVERAGE, it is kept with a warning naming them. Each part is
     trimmed to its sound (`sounding`) and the parts joined, INNER seconds of silence between two
     of a line and its `pause_after` between lines. The timings' `check` says the share of the
     script's words heard (`coverage`, null when no engine could hear them), the `retries` and
@@ -973,17 +991,22 @@ def _scene_take(
                 first, last, stops = sounding(samples, r)
                 verdict = hearing(text.split(), heard, last) if heard is not None else None
                 if verdict and not stops:  # cut off mid-sound: not said whole either
-                    verdict["ok"] = False
+                    verdict["ok"], verdict["cut"] = False, True
                 tried.append((verdict, samples, r, timed, first, last, stops))
                 if verdict is None or verdict["ok"]:
                     break
             verdict, samples, r, timed, first, last, stops = max(
-                tried, key=lambda t: (t[0] is None or t[0]["ok"], t[0] and t[0]["coverage"])
+                tried,
+                key=lambda t: (
+                    t[0] is None or t[0]["ok"],
+                    t[0] is None or not t[0]["cut"],
+                    t[0] and t[0]["coverage"],
+                ),
             )
             retries += len(tried) - 1
             if verdict is None:
                 warnings.append(UNCHECKED)
-            elif not verdict["ok"]:
+            elif verdict["cut"]:
                 raise ToolError(
                     f"{where}: the engine did not say it whole in {TRIES} tries (at best"
                     f" {verdict['coverage']:.0%} of its words heard); missing:"
@@ -992,7 +1015,13 @@ def _scene_take(
             else:
                 n = len(text.split())
                 said, heard_words = said + n, heard_words + round(verdict["coverage"] * n)
-                if len(tried) > 1:
+                if not verdict["ok"]:
+                    warnings.append(
+                        f"{where}: kept the best of {len(tried)} tries,"
+                        f" {verdict['coverage']:.0%} of its words heard; missing:"
+                        f" {' '.join(verdict['missing'])}"
+                    )
+                elif len(tried) > 1:
                     warnings.append(f"{where}: said whole on try {len(tried)}")
             if not stops:  # an unchecked take, kept as before
                 warnings.append(f"{where}: its audio ends mid-sound")

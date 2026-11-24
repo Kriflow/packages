@@ -162,13 +162,18 @@ its Setup, a JSON schema of its params, inputs, outputs, the `script` type, its 
   before, 0.15 s after); the parts of a line are joined with 0.2 s of silence between them, and
   the lines with their `pause_after`.
 - Every part is heard back by Whisper: the engine's own `/v1/align`, or for an engine without
-  one (Kokoro) the first engine of the list that has it. The part passes when at least 95% of
-  its words were heard (without case or punctuation, a number in digits or in words alike; a
-  word Whisper heard as one alike, as "sync" for "sink", counts; a word it heard nothing
-  for, or something unlike, is missing, as in a take cut short), two of its last three among them, the last ending within 1.5 s
-  of its sound, which does not end cut off mid-sound. A part that fails is voiced again with the
-  next seed (a random one without `seed`), up to 4 tries, and the best kept; still failing, the
-  stage fails naming the scene, line and words missing. With no engine to hear them (Kokoro
+  one (Kokoro) the first engine of the list that has it. The check is there to catch a take cut
+  short, so the words are compared loosely: without case or punctuation, a number in digits or
+  in words alike, letters spelled apart as one word ("G P S" is "GPS"), words that differ only in
+  spaces alike ("load balancer", "loadbalancer"), and a word Whisper heard as one alike, as
+  "sync" for "sink", counts; a word it heard nothing for, or something unlike, is missing. A part
+  is said whole when at least 95% of its words were heard, two of its last three among them, the
+  last ending within 1.5 s of its sound, which does not end mid-sound. A part not said whole is
+  voiced again with the next seed (a random one without `seed`), up to 4 tries, and the best
+  kept. Only a cut-off fails the stage, naming the scene, line and words missing: the part's end
+  unheard (that tail and end rule, or its sound ending mid-sound) or under 70% of its words
+  heard. A part between 70% and 95% with its end heard is kept, and a warning names the scene,
+  line, coverage and words missing (since speech 1.3.7; before, it failed the stage). With no engine to hear them (Kokoro
   alone, or a Chatterbox engine from before 1.3.5) the takes are kept as before and `warnings`
   says they were not checked, rather than pass them quietly.
 - The engines are tried in the order of `SPEECH_ENDPOINTS` (or of
@@ -193,7 +198,8 @@ its Setup, a JSON schema of its params, inputs, outputs, the `script` type, its 
   true`, and the call's `joined` and `message` name it: cut there and the word edge shows, so
   keep the two lines together or voice them again. Each take's `check` holds `coverage` (the
   share of its words Whisper heard, null when nothing could hear them), `retries` and its
-  `warnings` (parts said whole only on a later try, a part ending mid-sound, takes not checked),
+  `warnings` (parts said whole only on a later try, parts kept short of 95% heard, a part ending
+  mid-sound, takes not checked),
   which also join the file's `warnings`.
 - The workflow check wants an input and an output and refuses params outside the Manifest's.
 - The run page's speech panel shows the voice that spoke, the one chosen when the engine could

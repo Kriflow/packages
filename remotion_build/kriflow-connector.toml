@@ -2,8 +2,9 @@
 # it from its release tag here and enables it for every world that has not decided otherwise. It has no
 # server of its own: it asks the core for a Build Session, then renders through remotion_render.
 name = "remotion_build"
-version = "1.0.5"
-contract = 1
+version = "1.1.0"
+# 3: this Manifest is named kriflow-connector.toml, which cores from contract 3 read.
+contract = 3
 label = "Remotion build"
 about = "Writes a Remotion project from the script in a sandboxed coding session, then renders it. Needs Node."
 kind = "stage"
@@ -41,6 +42,8 @@ output = "video.mp4"
 # The render is remotion_render's own code path, so the two never drift and share one browser.
 connector = "remotion_render"
 tool = "remotion_render"
+# The session looks at its own frames with remotion_render's stills; it never renders the video.
+tools = ["stills"]
 arguments = { project = "$folder", composition = "$composition" }
 
 [build_session.notes]

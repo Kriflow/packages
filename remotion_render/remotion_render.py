@@ -11,7 +11,13 @@ since one long-lived tab runs out of WebGL contexts.
 The composition receives the script as input props: `{"script": <text>, "scriptPath": <path>,
 ...props}`, read with `getInputProps()`. On success the video gets a markdown sidecar,
 `<output>.md`, with frontmatter (type video, world, run, stage, created) and a body that names
-the source script, so the graph sees it, and the template's git commit when it has one.
+the source script, so the graph sees it, and the template's git commit when it has one. An mp4
+also gets contact sheets beside it, `<stem>.contact_1.png`, `_2`, ...: a frame every 2 s, 6
+across and 5 down (60 s a sheet), each labelled with its time; making them never fails a render.
+
+`stills` renders chosen frames of a composition and answers with them as images (and one
+labelled sheet of them all past 4 frames): what a Build Session (remotion_build's) looks at to
+check its work. It draws in software with Chrome Headless Shell, so it never waits for the GPU.
 
 Its `project` is a folder Kriflow gives as a full path: the world's Template a direct render
 stage names (ADR 0028), which the core resolves and checks, or a Build Session's build folder.
@@ -27,6 +33,7 @@ images, which a Template's prepare command installs.
 """
 
 import fcntl
+import io
 import json
 import os
 import re
@@ -45,6 +52,7 @@ from typing import IO, Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.utilities.types import Image
 
 POLL = "remotion_render_status"
 CONCURRENCY = "SWARMIFY_RENDER_CONCURRENCY"
@@ -64,6 +72,16 @@ PACKAGE = "remotion_render"
 WAITING = "Waiting for the GPU"
 GRACE = 5.0
 """Seconds a cancelled job has to stop on SIGTERM before it is killed."""
+STILLS = 24
+"""The most frames one `stills` call renders."""
+STILLS_LIMIT = 300.0
+"""Seconds one `stills` call may take, bundle and every frame together."""
+CELL = 320
+"""The width of one frame on a sheet, in pixels."""
+EVERY = 2.0
+"""Seconds between the frames of a contact sheet."""
+COLUMNS, ROWS = 6, 5
+"""A contact sheet's grid: 30 frames, 60 s of video."""
 """The Remotion CLI in a project, which its `npm ci` installs."""
 """Where the install step's `remotion browser ensure` put Chrome Headless Shell."""
 
@@ -291,7 +309,7 @@ def remotion_render_status(job_id: str, cancel: bool = False) -> dict[str, Any]:
     return {"status": "running", "progress": value, "message": message}
 
 
-def _sidecar(state: dict[str, Any], size: int) -> Path:
+def _sidecar(state: dict[str, Any], size: int, sheets: tuple[Path, ...] = ()) -> Path:
     output, script = Path(state["output"]), Path(state["input"])
     fields: dict[str, Any] = {
         "type": "video",
@@ -310,6 +328,12 @@ def _sidecar(state: dict[str, Any], size: int) -> Path:
         f"# {output.name}\n\nVideo rendered by Remotion from the script `{script.name}` with"
         f" composition `{state['composition']}`, {size} bytes.\n"
     )
+    if sheets:
+        names = ", ".join(f"`{p.name}`" for p in sheets)
+        body += (
+            f"\nContact sheets beside it, a frame every {EVERY:.0f} s, {COLUMNS} across and"
+            f" {ROWS} down, each labelled with its time: {names}.\n"
+        )
     path = output.with_name(output.name + ".md")
     path.write_text(f"---\n{head}\n---\n\n{body}")
     return path
@@ -347,14 +371,18 @@ def _shell() -> str | None:
     return str(found[0]) if found else shutil.which("chrome-headless-shell")
 
 
-def _run(name: str, argv: list[str], project: Path, log: Any) -> str:
+def _run(name: str, argv: list[str], project: Path, log: Any, timeout: float | None = None) -> str:
     """One CLI process, its output appended to the job's log and returned; RuntimeError when it
-    fails, naming the step."""
+    fails or outlasts `timeout` seconds, naming the step."""
     log.write(f"$ {' '.join(argv)}\n")
     log.flush()
     start = Path(log.name).stat().st_size
     try:
-        code = subprocess.run(argv, cwd=project, stdout=log, stderr=subprocess.STDOUT).returncode
+        code = subprocess.run(
+            argv, cwd=project, stdout=log, stderr=subprocess.STDOUT, timeout=timeout
+        ).returncode
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{name} ran past its time limit") from exc
     except OSError as exc:
         raise RuntimeError(f"could not start {name}: {exc}") from exc
     if code != 0:
@@ -538,10 +566,182 @@ def run_job(job: Path) -> None:
                 state.setdefault("error", f"remotion render exited with {code}")
     if code == 0 and output.is_file() and output.stat().st_size > 0:
         size = output.stat().st_size
-        state = {**state, "status": "done", "bytes": size, "sidecar": str(_sidecar(state, size))}
+        sheets = contact_sheets(state) if output.suffix == ".mp4" else []
+        sidecar = _sidecar(state, size, tuple(sheets))
+        state = {**state, "status": "done", "bytes": size, "sidecar": str(sidecar)}
     else:
         state = {"error": "remotion render wrote no video", **state, "status": "failed"}
     _write(job, {**state, "ended": _now()})
+
+
+# Sheets: Remotion's bundled ffmpeg has no fps, tile or drawtext filter (4.0.538: scale, crop and
+# a few more), so it only decodes; Pillow, in this package's environment, lays the frames out.
+
+
+def sheet(tiles: list[tuple[Any, str]], to: Path, columns: int) -> None:
+    """Pictures (Pillow images or image paths) in rows of `columns`, each CELL wide under its
+    label. Pillow is imported here, the one place that needs it."""
+    from PIL import Image as Picture
+    from PIL import ImageDraw, ImageFont
+
+    pictures = [Picture.open(t) if isinstance(t, Path) else t for t, _ in tiles]
+    w, h = pictures[0].size
+    h, w, label = max(1, round(h * CELL / w)), CELL, 24
+    cols = min(len(tiles), columns)
+    rows = -(-len(tiles) // cols)
+    out = Picture.new("RGB", (cols * w, rows * (h + label)), "black")
+    draw, font = ImageDraw.Draw(out), ImageFont.load_default(size=16)
+    for i, (picture, (_, text)) in enumerate(zip(pictures, tiles, strict=True)):
+        x, y = (i % cols) * w, (i // cols) * (h + label)
+        out.paste(picture.convert("RGB").resize((w, h)), (x, y + label))
+        draw.text((x + 6, y + 4), text, fill="white", font=font)
+    out.save(to)
+
+
+def _clock(seconds: float) -> str:
+    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+
+def _pngs(stream: IO[bytes]) -> Iterator[bytes]:
+    """The PNG files one after another in `stream`, each whole: its signature, then chunks
+    (length, type, data, CRC) up to IEND."""
+    while head := stream.read(8):
+        png = [head]
+        while True:
+            size_type = stream.read(8)
+            if len(size_type) < 8:
+                return
+            data = stream.read(int.from_bytes(size_type[:4]) + 4)
+            png += [size_type, data]
+            if size_type[4:] == b"IEND":
+                break
+        yield b"".join(png)
+
+
+def contact_sheets(state: dict[str, Any]) -> list[Path]:
+    """The video's contact sheets, `<stem>.contact_<n>.png` beside it, made with the project's
+    `remotion ffmpeg` decoding it to raw frames at CELL wide, a frame kept every EVERY seconds.
+    Any failure is logged and makes none: the render stands."""
+    from PIL import Image as Picture
+
+    video, project = Path(state["output"]), Path(state["project"])
+    cli = str(project / CLI)
+    for old in video.parent.glob(f"{video.stem}.contact_*.png"):
+        old.unlink()
+    made: list[Path] = []
+    with open(state["log"], "a") as log:
+        try:
+            probe = subprocess.run(
+                [cli, "ffmpeg", "-hide_banner", "-i", str(video)],
+                cwd=project, capture_output=True, text=True, timeout=60,
+            )  # fmt: skip
+            stream = re.search(r"Video: .*?(\d{2,5})x(\d{2,5}).*?([\d.]+) fps", probe.stderr)
+            if not stream:
+                raise RuntimeError(f"ffmpeg named no video stream:\n{probe.stderr[-800:]}")
+            width, height, fps = int(stream[1]), int(stream[2]), float(stream[3])
+            h = max(2, round(height * CELL / width / 2) * 2)
+            step = max(1, round(EVERY * fps))
+            # no rawvideo muxer in it: every frame as a small PNG down a pipe, split here
+            argv = [cli, "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video)]
+            argv += ["-vf", f"scale={CELL}:{h}", "-f", "image2pipe", "-c:v", "png"]
+            argv += ["-compression_level", "1", "pipe:1"]
+            log.write(f"$ {' '.join(argv)}\n")
+            log.flush()
+            decode = subprocess.Popen(argv, cwd=project, stdout=subprocess.PIPE, stderr=log)
+            assert decode.stdout is not None
+            tiles: list[tuple[Any, str]] = []
+
+            def flush() -> None:
+                made.append(video.with_name(f"{video.stem}.contact_{len(made) + 1}.png"))
+                sheet(tiles, made[-1], COLUMNS)
+                tiles.clear()
+
+            for n, png in enumerate(_pngs(decode.stdout)):
+                if n % step == 0:
+                    tiles.append((Picture.open(io.BytesIO(png)), _clock(n / fps)))
+                    if len(tiles) == COLUMNS * ROWS:
+                        flush()
+            if decode.wait() != 0:
+                raise RuntimeError(f"remotion ffmpeg exited with {decode.returncode}")
+            if tiles:
+                flush()
+            log.write(f"Contact sheets: {', '.join(p.name for p in made)}\n")
+        except Exception as exc:  # noqa: BLE001, a sheet is never worth the render
+            log.write(f"No contact sheets: {exc}\n")
+            for p in made:
+                p.unlink(missing_ok=True)
+            return []
+    return made
+
+
+# Stills
+
+
+@mcp.tool(
+    description="Render chosen frames of a Remotion composition and return them as images, plus"
+    " one labelled sheet of them all when more than 4. Draws in software; never waits for the GPU."
+)
+def stills(
+    project: str,
+    frames: list[int],
+    composition: str = "Main",
+    input_path: str = "",
+    props: dict[str, Any] | None = None,
+    scale: float = 0.5,
+    entry: str = "src/index.ts",
+) -> list[Image | str]:
+    """`project` is the Remotion project folder, a full path (a build's folder: the frames go in
+    `stills/<composition>/` beside it, in the stage's folder, the sheet at
+    `stills/<composition>.jpeg`); `frames` frame numbers from 0, at most STILLS; `input_path` the
+    script, which with `props` makes the input props as a render's (`{...props, script,
+    scriptPath}`); `scale` of the composition's size, 0.5 by default."""
+    folder = project_folder(project)
+    if not (folder / CLI).is_file():
+        raise ToolError(f"{folder} has no node_modules: install the project first")
+    wanted = sorted(set(frames))
+    if not wanted or wanted[0] < 0 or len(wanted) > STILLS:
+        raise ToolError(f"frames must be 1 to {STILLS} frame numbers from 0, got {frames}")
+    if not 0 < scale <= 2:
+        raise ToolError(f"scale must be above 0 and at most 2, got {scale}")
+    if not (shell := _shell()):
+        raise ToolError("no Chrome Headless Shell: reinstall remotion_render")
+    given = dict(props or {})
+    if input_path:
+        if not (script := Path(input_path)).is_file():
+            raise ToolError(f"the script {script} does not exist")
+        given |= {"script": script.read_text(), "scriptPath": str(script)}
+    name = _flag("composition", composition)
+    place = folder.parent / "stills"
+    out, log_path = place / name, place / f"{name}.log"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    (out / "props.json").write_text(json.dumps(given))
+    cli, bundle, end = str(folder / CLI), out / "bundle", time.monotonic() + STILLS_LIMIT
+    paths = [out / f"{n:05d}.jpeg" for n in wanted]
+    try:
+        with open(log_path, "w") as log:
+            argv = [cli, "bundle", _flag("entry", entry), f"--out-dir={bundle}"]
+            _run("remotion bundle", argv, folder, log, end - time.monotonic())
+            for n, path in zip(wanted, paths, strict=True):
+                argv = [cli, "still", str(bundle), name, str(path), f"--frame={n}"]
+                argv += [f"--props={out / 'props.json'}", f"--scale={scale}"]
+                argv += ["--image-format=jpeg", f"--port={_free_port()}"]
+                argv.append(f"--browser-executable={shell}")
+                _run(f"remotion still of frame {n}", argv, folder, log, end - time.monotonic())
+    except RuntimeError as exc:
+        raise ToolError(f"{exc}\n{_tail(log_path)}") from exc
+    finally:
+        shutil.rmtree(bundle, ignore_errors=True)
+    if missing := [n for n, p in zip(wanted, paths, strict=True) if not p.is_file()]:
+        raise ToolError(f"remotion still wrote no frame {missing}\n{_tail(log_path)}")
+    answer: list[Image | str] = [Image(path=p) for p in paths]
+    said = ", ".join(f"frame {n}: {p}" for n, p in zip(wanted, paths, strict=True))
+    if len(paths) > 4:
+        whole = place / f"{name}.jpeg"
+        sheet([(p, f"frame {n}") for n, p in zip(wanted, paths, strict=True)], whole, 4)
+        answer.append(Image(path=whole))
+        said += f"; all of them on one sheet, in that order, labelled: {whole}"
+    return [*answer, f"{name} at scale {scale}, in order: {said}"]
 
 
 if __name__ == "__main__":

@@ -4,15 +4,16 @@ The Remotion build connector: one sandboxed coding session writes a Remotion pro
 run's script, then the remotion_render package's own render, not the agent, turns it into the
 stage's video. It is a Connector Package (ADR 0019) and one of Kriflow's default packages, so
 workflows call `remotion_build` exactly as before. Everything Kriflow knows of it is
-`swarmify-connector.toml`: it requests a Build Session (see Build Sessions in Kriflow's README,
+`kriflow-connector.toml`: it requests a Build Session (see Build Sessions in Kriflow's README,
 which covers the session, its sandbox, its budget and revisions after a send-back) and has no
 server of its own.
 
 What it gives the session, all files beside this one:
 
 - `system.md`, the builder's system prompt: how to work in the seeded project, assets and fonts
-  under `public/` because the render has no network, and how to keep a 3D scene
-  (`@remotion/three`) deterministic.
+  under `public/` because the render has no network, how to keep a 3D scene
+  (`@remotion/three`) deterministic, and to look at stills of its composition (below) until
+  they are right, never rendering the video itself.
 - `brief.md`, the task: build composition `$composition` from the script at `$input`.
 - `voice_first.md`, added when one of the stage's inputs is a `timings.json` (below).
 - `starter/`, the minimal project a build starts from when it names no `base`: `src/index.ts`
@@ -30,6 +31,21 @@ The render is remotion_render's `remotion_render` tool, called on the build fold
 composition (`[build_session]` `connector`, `tool` and `arguments`), so a world enables both
 (both are defaults). Sharing that code path, rather than a copy of it, keeps one render and one
 Chrome Headless Shell (800 MB) for both.
+
+## Stills
+
+The builder cannot render the video, but it sees its own frames while it builds: the session is
+offered remotion_render's `stills` (`[build_session] tools = ["stills"]`, allowed as
+`mcp__remotion_render__stills`), its server confined to the stage. The builder calls it with the
+build folder (its working directory) as `project`, the frames it chooses (the first frame of each
+scene, every key word's frame and a spread, up to 24 a call), the composition and the script as
+`input_path`, so the frames get a render's input props; a Template's `TEMPLATE.md` may name an
+audit prop to pass in `props`. It answers with the frames as images, and past 4 a labelled sheet
+of them all; the files land in `<stage>/stills/`, outside `build/`. The builder fixes what it
+sees and looks again, and finishes only when every scene has stills it read since its last
+change. Stills draw in software and never wait for the GPU (remotion_render's README, Stills).
+The video's render after the session also leaves contact sheets beside `video.mp4`
+(`video.contact_1.png`, ...), a frame every 2 s.
 
 ## The stage
 

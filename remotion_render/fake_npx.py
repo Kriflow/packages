@@ -15,16 +15,50 @@ It prints its arguments first (`fake remotion: [...]`), which the job's log keep
 other commands a GPU render runs: `bundle` writes an index.html, `compositions` lists every
 composition at 1500 frames, a render of `--frames=a-b` prints that many frames and writes its
 `--separate-audio-to` too (`Broken` fails only on a range holding frame 900), and `ffmpeg` writes
-the output naming the parts and audio its concat lists joined.
+the output naming the parts and audio its concat lists joined. `ffmpeg -i <video>` alone
+describes a 1080x1920 2 fps stream (none for a video of composition `Blind`), and decoding it to
+an image2pipe writes 125 tiny PNGs (62 s) to stdout, as contact sheets read. `still` writes a
+PNG to its output (`Slow` pauses 2 s first; `Broken` fails).
 """
 
 import json
 import socket
+import struct
 import sys
 import time
 import urllib.request
+import zlib
 from pathlib import Path
 
+
+def png(rgb: tuple[int, int, int], w: int = 4, h: int = 4) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    rows = b"".join(b"\0" + bytes(rgb) * w for _ in range(h))
+    head = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", head)
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+if sys.argv[1:2] == ["ffmpeg"] and "-f" not in sys.argv:  # a probe: describe the stream
+    video = Path(sys.argv[sys.argv.index("-i") + 1])
+    if '"Blind"' not in video.read_text():
+        print(
+            "  Stream #0:0: Video: h264 (High), yuv420p, 1080x1920, 2 fps, 2 tbr", file=sys.stderr
+        )
+    print("At least one output file must be specified", file=sys.stderr)
+    sys.exit(1)
+if sys.argv[1:2] == ["ffmpeg"] and "image2pipe" in sys.argv:
+    for n in range(62 * 2 + 1):
+        sys.stdout.buffer.write(png((n % 256, 0, 0)))
+    sys.exit(0)
 print(f"fake remotion: {json.dumps(sys.argv[1:])}", flush=True)
 args = [a for a in sys.argv[1:] if not a.startswith("-")]
 if args[:1] == ["bundle"]:
@@ -38,6 +72,15 @@ if args[:1] == ["compositions"]:
     print("The following compositions are available:\n")
     for name in ("Short", "Broken", "Empty"):
         print(f"{name:<20}30      1080x1920      1500 (50.00 sec)")
+    sys.exit(0)
+if args[:1] == ["still"]:
+    assert (Path(args[1]) / "index.html").is_file(), args
+    if args[2] == "Slow":
+        time.sleep(2)
+    if args[2] == "Broken":
+        print(f"Error: No composition with the ID {args[2]} found.", flush=True)
+        sys.exit(1)
+    Path(args[3]).write_bytes(png((0, 0, 200), 54, 96))
     sys.exit(0)
 if args[:1] == ["ffmpeg"]:
     lists = [Path(sys.argv[i + 1]) for i, a in enumerate(sys.argv) if a == "-i"]

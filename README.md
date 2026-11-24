@@ -8,7 +8,7 @@ first-party or not. Formerly `swarmify-connectors`; GitHub redirects the old nam
 
 ```
 blender_build/  blender_render/  browser/  hyperframes_build/  hyperframes_render/  meta/
-remotion_build/  remotion_render/  slack/  speech/  upload_post/  youtube/
+remotion_build/  remotion_render/  slack/  sound_bank/  speech/  upload_post/  youtube/
 index.toml      the curated index
 tools/          the repository's check tool and test runner
 tests/          tests of the index and the check tool

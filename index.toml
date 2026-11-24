@@ -164,6 +164,23 @@ permissions = [
 ]
 
 [[packages]]
+name = "sound_bank"
+description = "Fetches CC0 or public domain sounds, or keeps a take a run made, into the world's Sound Bank as a Draft with a Demo."
+git = "https://github.com/Kriflow/packages.git"
+subfolder = "sound_bank"
+ref = "sound_bank-v0.1.0"
+contract = 3
+permissions = [
+  "network: bigsoundbank.com",
+  "network: commons.wikimedia.org",
+  "network: upload.wikimedia.org",
+  "install_network: pypi.org",
+  "install_network: files.pythonhosted.org",
+  "folders: worlds/{world}/runs",
+  "owned_folders: sounds",
+]
+
+[[packages]]
 name = "speech"
 description = "Voices a script, one take per scene, with word timings and cut points. Needs a speech engine (its README, Speech engines)."
 git = "https://github.com/Kriflow/packages.git"

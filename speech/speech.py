@@ -766,7 +766,8 @@ def _spoken(words: list[str], heard: bool = False) -> list[tuple[list[int], str]
     without case or punctuation, hyphens apart, and a number as its value, since Whisper writes
     "100,000", "1,500", "10 million" or "7.2" where a script says "a hundred thousand",
     "fifteen hundred", "ten million" or "seven point two" (`heard` words come as "100 ,000",
-    joined first)."""
+    joined first); letters spelled apart are one word ("G P S" is "gps") and digits read one by
+    one with "oh" for zero one number ("four oh two" is "402")."""
     if heard:
         words = re.sub(r"(\d) ,(?=\d)", r"\1,", " ".join(words)).split()
     raw: list[tuple[int, str, bool]] = []  # (word, token, a clause ends after it)
@@ -846,6 +847,21 @@ def _spoken(words: list[str], heard: bool = False) -> list[tuple[list[int], str]
         else:
             joined.append((owners, token))
         run = letter
+    # digits read one by one, "oh" for zero, as a script writes "four oh two" for Whisper's "402"
+    out, joined, k = joined, [], 0
+    while k < len(out):
+        n = k + 1
+        if len(out[k][1]) == 1 and out[k][1].isdigit():
+            while n < len(out) and re.fullmatch(r"\d|oh", out[n][1]):
+                n += 1
+            while out[n - 1][1] == "oh":  # "two, oh" ends at the two
+                n -= 1
+        if n - k > 1 and any(t == "oh" for _, t in out[k:n]):
+            digits = "".join("0" if t == "oh" else t for _, t in out[k:n])
+            joined.append(([i for owners, _ in out[k:n] for i in owners], str(int(digits))))
+        else:
+            joined += out[k:n]
+        k = n
     return joined
 
 

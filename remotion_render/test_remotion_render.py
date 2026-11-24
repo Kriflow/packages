@@ -4,6 +4,7 @@ connector sandbox and rendering with a fake Remotion CLI as the project's own (`
 its project one of the world's Templates (ADR 0028) or a build folder of the run.
 `KRIFLOW_REMOTION_PROJECT` opts in to one real render."""
 
+import base64
 import fcntl
 import json
 import os
@@ -19,8 +20,10 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
+import anyio
 import pytest
 import remotion_render as rr
+from mcp import Client, StdioServerParameters
 
 from kriflow_connectors import (
     MIGRATIONS,
@@ -372,7 +375,9 @@ def test_on_a_gpu_it_renders_in_chunks_of_fresh_browsers_then_joins_them(
     assert seen == sorted(seen) and rr.remotion_render_status(str(job))["progress"] == 1
     hidden = {p.name for p in Path(state["output"]).parent.iterdir()}
     assert hidden == {"short.mp4", "short.mp4.md", ".short.mp4.job.json", ".short.mp4.log"} | {
-        ".short.mp4.props.json"
+        ".short.mp4.props.json",
+        "short.contact_1.png",
+        "short.contact_2.png",
     }
 
 
@@ -609,7 +614,7 @@ def test_a_repeated_call_attaches_to_the_render_instead_of_starting_another(
     assert first["job_id"] == again["job_id"]
     assert (first["message"], again["message"]) == ("render started", "render already started")
     job = Path(first["job_id"])
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 30  # its contact sheets too, on a loaded runner
     while json.loads(job.read_text())["status"] == "running":
         assert time.monotonic() < deadline
         time.sleep(0.05)
@@ -620,13 +625,31 @@ def test_a_repeated_call_attaches_to_the_render_instead_of_starting_another(
     )
 
 
+@pytest.fixture
+def real_browser(installed: Path) -> Iterator[None]:
+    """The test install's npm is fake, so it has no browser: the real project's own, which its
+    CLI downloaded beside it, for one real test."""
+    mine = installed / "remotion_render" / VERSION / "node_modules" / ".remotion"
+    theirs = Path(os.environ["KRIFLOW_REMOTION_PROJECT"]) / "node_modules" / ".remotion"
+    if mine.exists() or not theirs.is_dir():
+        yield
+        return
+    shutil.copytree(theirs, mine, symlinks=True)
+    yield
+    shutil.rmtree(mine)
+
+
 @pytest.mark.skipif(
     not os.environ.get("KRIFLOW_REMOTION_PROJECT"),
     reason="set KRIFLOW_REMOTION_PROJECT (and KRIFLOW_REMOTION_COMPOSITION) for a real render",
 )
-def test_a_real_render(tmp_path: Path, real: Connectors) -> None:
+def test_a_real_render(tmp_path: Path, real: Connectors, real_browser: None) -> None:
     real_project = tmp_path / TEMPLATES / "real"  # a world's Template, where its sandbox reads
-    shutil.copytree(os.environ["KRIFLOW_REMOTION_PROJECT"], real_project, symlinks=True)
+    # without a webpack cache of earlier runs, which the read-only Template could not update
+    skip = shutil.ignore_patterns(".cache")
+    shutil.copytree(
+        os.environ["KRIFLOW_REMOTION_PROJECT"], real_project, symlinks=True, ignore=skip
+    )
     composition = os.environ.get("KRIFLOW_REMOTION_COMPOSITION", "Main")
     config = stage(tmp_path, real_project, composition, frames="0-9")
     call = real.run_stage(W, "run_1", "stage_2", config)
@@ -634,6 +657,7 @@ def test_a_real_render(tmp_path: Path, real: Connectors) -> None:
     assert call.status == "done" and video.stat().st_size > 1000
     assert video.read_bytes()[4:8] == b"ftyp"
     assert video.with_name("short.mp4.md").exists()
+    assert video.with_name("short.contact_1.png").is_file()  # the bundled ffmpeg decodes it
 
 
 def test_pid_zero_is_never_a_live_render() -> None:
@@ -725,3 +749,171 @@ def test_a_render_uses_a_free_port_not_one_another_server_holds(
         else (given(McpTransport()), stage(tmp_path, fake_npx))
     )
     assert connectors.run_stage(W, "run_1", "stage_2", config).status == "done"
+
+
+# Contact sheets: every mp4 render leaves them beside its video
+
+
+def test_a_render_leaves_contact_sheets_beside_its_video_and_names_them(
+    tmp_path: Path, real: Connectors, fake_npx: Path
+) -> None:
+    """A frame every 2 s, 6 across and 5 down, 320 wide: the fake's 62 s (125 frames at 2
+    fps, every 4th kept) make a full sheet of 30 and one of the 2 left (60 s and 62 s)."""
+    from PIL import Image as Picture
+
+    config = stage(tmp_path, fake_npx)
+    assert real.run_stage(W, "run_1", "stage_2", config).status == "done"
+    video = Path(config["params"]["output_path"])
+    first, second = video.with_name("short.contact_1.png"), video.with_name("short.contact_2.png")
+    with Picture.open(first) as a, Picture.open(second) as b:
+        assert a.size == (6 * 320, 5 * (320 + 24))  # the fake's frames are square
+        assert b.size == (2 * 320, 320 + 24)
+        assert a.getpixel((5, 24 + 5))[0] == 0 and a.getpixel((320 + 5, 24 + 5))[0] == 4
+        assert b.getpixel((320 + 5, 24 + 5))[0] == 124  # frames 120 and 124
+    assert not video.with_name("short.contact_3.png").exists()
+    text = video.with_name("short.mp4.md").read_text()
+    assert "a frame every 2 s, 6 across and 5 down" in text
+    assert "`short.contact_1.png`, `short.contact_2.png`" in text
+
+
+def test_contact_sheets_that_fail_never_fail_the_render(
+    tmp_path: Path, fake_npx: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rr, "DEV", tmp_path / "dev")
+    job, _ = _here(tmp_path, fake_npx, "Blind")  # ffmpeg names no video stream
+    state = json.loads(job.read_text())
+    assert state["status"] == "done"
+    assert not list(Path(state["output"]).parent.glob("*.contact_*.png"))
+    assert "No contact sheets: ffmpeg named no video stream" in Path(state["log"]).read_text()
+    assert "Contact sheets" not in Path(state["sidecar"]).read_text()
+
+
+# Stills, as a Build Session calls them: the server confined to the build's stage
+
+
+def still(connectors: Connectors, **arguments: Any) -> Any:
+    """`stills` called over stdio MCP on the server a Build Session of stage_2 is given."""
+    server = connectors.agent_servers(W, ["remotion_render"], None, ("run_1", "stage_2"))
+    config = server["remotion_render"]
+    params = StdioServerParameters(
+        command=config["command"], args=config["args"], env=config["env"]
+    )
+
+    async def call() -> Any:
+        async with Client(params, cache=None) as client:
+            return await client.call_tool("stills", arguments)
+
+    return anyio.run(call)
+
+
+@pytest.fixture
+def build(tmp_path: Path, fake_npx: Path) -> Path:
+    project = tmp_path / RUN / "stage_2" / "build"
+    project.parent.mkdir(parents=True)
+    fake_npx.rename(project)
+    return project
+
+
+def _cli(log: Path) -> list[list[str]]:
+    return [
+        json.loads(line[15:])
+        for line in log.read_text().splitlines()
+        if line.startswith("fake remotion: ")
+    ]
+
+
+def test_stills_render_the_frames_asked_from_one_bundle_and_a_sheet_of_them(
+    tmp_path: Path, given: Given, build: Path
+) -> None:
+    from PIL import Image as Picture
+
+    script = tmp_path / RUN / "stage_1" / "artifacts" / "script.md"
+    script.parent.mkdir(parents=True)
+    script.write_text("# Hook\n")
+    frames = [90, 0, 30, 60, 120, 30]
+    result = still(
+        given(McpTransport()),
+        project=str(build),
+        frames=frames,
+        input_path=str(script),
+        props={"audit": True},
+    )
+    assert not result.is_error, result
+    *images, said = result.content
+    assert [i.type for i in images] == ["image"] * 6 and said.type == "text"
+    out = build.parent / "stills" / "Main"
+    paths = [out / f"{n:05d}.jpeg" for n in (0, 30, 60, 90, 120)]
+    for image, path in zip(images, [*paths, build.parent / "stills" / "Main.jpeg"], strict=True):
+        assert base64.b64decode(image.data) == path.read_bytes()
+    with Picture.open(build.parent / "stills" / "Main.jpeg") as sheet:
+        assert sheet.size == (4 * 320, 2 * (569 + 24))  # 54x96 frames, 320 wide, 4 a row
+    assert said.text.startswith("Main at scale 0.5, in order: frame 0: ")
+    assert "all of them on one sheet, in that order, labelled" in said.text
+    calls = _cli(build.parent / "stills" / "Main.log")
+    assert [c[0] for c in calls] == ["bundle"] + ["still"] * 5
+    assert [c[4] for c in calls[1:]] == [f"--frame={n}" for n in (0, 30, 60, 90, 120)]
+    assert all("--scale=0.5" in c and "--image-format=jpeg" in c for c in calls[1:])
+    assert all(any(a.startswith("--browser-executable=") for a in c) for c in calls[1:])
+    assert len({next(a for a in c if a.startswith("--port=")) for c in calls[1:]}) == 5
+    props = json.loads((out / "props.json").read_text())
+    assert props == {"audit": True, "script": "# Hook\n", "scriptPath": str(script)}
+    assert not (out / "bundle").exists()
+
+
+def test_four_stills_or_fewer_get_no_sheet(given: Given, build: Path) -> None:
+    result = still(given(McpTransport()), project=str(build), frames=[5], scale=0.25)
+    assert not result.is_error, result
+    image, said = result.content
+    assert image.type == "image" and "scale 0.25" in said.text and "sheet" not in said.text
+    assert not (build.parent / "stills" / "Main.jpeg").exists()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "said"),
+    [
+        ({"frames": []}, "frames must be 1 to 24 frame numbers from 0"),
+        ({"frames": list(range(25))}, "frames must be 1 to 24 frame numbers from 0"),
+        ({"frames": [-1]}, "frames must be 1 to 24 frame numbers from 0"),
+        ({"frames": [1], "scale": 0}, "scale must be above 0"),
+        ({"frames": [1], "composition": "Broken"}, "remotion still of frame 1 exited with 1"),
+        ({"frames": [1], "input_path": "/nowhere.md"}, "the script /nowhere.md does not exist"),
+    ],
+)
+def test_stills_that_cannot_render_say_why(
+    given: Given, build: Path, arguments: dict, said: str
+) -> None:
+    result = still(given(McpTransport()), project=str(build), **arguments)
+    assert result.is_error
+    assert said in result.content[0].text
+
+
+def test_stills_of_a_project_without_node_modules_say_how_to_install(
+    given: Given, build: Path
+) -> None:
+    shutil.rmtree(build / "node_modules")
+    result = still(given(McpTransport()), project=str(build), frames=[0])
+    assert result.is_error and "has no node_modules" in result.content[0].text
+
+
+def test_stills_stop_at_their_time_limit(build: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rr, "STILLS_LIMIT", 1.0)
+    with pytest.raises(rr.ToolError, match="remotion still of frame 0 ran past its time limit"):
+        rr.stills(str(build), [0], composition="Slow")
+
+
+@pytest.mark.skipif(
+    not os.environ.get("KRIFLOW_REMOTION_PROJECT"),
+    reason="set KRIFLOW_REMOTION_PROJECT (and KRIFLOW_REMOTION_COMPOSITION) for real stills",
+)
+def test_real_stills(tmp_path: Path, given: Given, real_browser: None) -> None:
+    project = tmp_path / RUN / "stage_2" / "build"  # a build's folder, as a session's
+    shutil.copytree(os.environ["KRIFLOW_REMOTION_PROJECT"], project, symlinks=True)
+    composition = os.environ.get("KRIFLOW_REMOTION_COMPOSITION", "Main")
+    frames = [0, 5, 10, 15, 20]
+    result = still(
+        given(McpTransport()), project=str(project), frames=frames, composition=composition
+    )
+    assert not result.is_error, result
+    *images, _ = result.content
+    assert [i.mime_type for i in images] == ["image/jpeg"] * 6
+    assert base64.b64decode(images[0].data)[:2] == b"\xff\xd8"

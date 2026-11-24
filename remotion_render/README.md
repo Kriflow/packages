@@ -7,7 +7,8 @@ it from its release tag here into `<data dir>/packages/remotion_render/<version>
 every world that has not decided otherwise, so workflows call `remotion_render` exactly as before.
 Everything Kriflow knows of it is `kriflow-connector.toml`.
 
-Its install step (ADR 0026) puts beside it its Python (`uv sync`: the MCP SDK), the Remotion CLI
+Its install step (ADR 0026) puts beside it its Python (`uv sync`: the MCP SDK and Pillow, which
+lays out contact sheets), the Remotion CLI
 (`npm ci` from `package-lock.json`) and the Chrome Headless Shell Remotion downloads for it
 (`npx remotion browser ensure`), about 800 MB, reaching only npm and Remotion's host for the
 browser (Google's storage where Remotion's own build does not fit the machine), its Manifest's
@@ -98,6 +99,44 @@ with its name (`remotion render of frames 600-1199 exited with 1`) and the log's
 which hold every step's output. A GPU render therefore always has an audio track. Other codecs,
 and every render in software, stay one `remotion render`.
 
+## Contact sheets
+
+Every successful mp4 render, a render stage's or a Build Session's, leaves contact sheets beside
+its video: `short.contact_1.png`, `short.contact_2.png`, ..., a frame every 2 s laid out 6 across
+and 5 down (60 s a sheet), each frame 320 px wide under its time (`0:02`). The sidecar names
+them. The project's `remotion ffmpeg` decodes the video to small PNGs down a pipe and the
+package keeps every 2 s worth of frames, exactly (frame 60, 120, ... at 30 fps); Pillow lays
+them out. Remotion's bundled ffmpeg (4.0.538) has no `fps`, `tile`, `drawtext` or `rawvideo`
+muxer, only `scale` and a few more, so it cannot make the sheet itself. A 70 s 1080x1920 video
+takes about 2 s on a Mac. A sheet that cannot be made never fails the render: the job's log says
+`No contact sheets: <why>` and the sidecar names none. A new render of the same output removes
+the old sheets first.
+
+## Stills
+
+`stills` is the tool a Build Session calls to see its own frames while it builds (remotion_build's
+`[build_session] tools = ["stills"]`, allowed as `mcp__remotion_render__stills`). It takes:
+
+- `project`: the project folder, a full path (the build folder);
+- `frames`: 1 to 24 frame numbers from 0;
+- `composition` (`Main`), `entry` (`src/index.ts`);
+- `input_path`: the script, optional, and `props`, optional: the input props are a render's,
+  `{...props, "script": <text>, "scriptPath": <path>}`, so a Template's audit prop passes here;
+- `scale` (0.5) of the composition's size.
+
+It bundles once (`remotion bundle`), then runs `remotion still <bundle> <composition>
+--frame=<n> --scale=<scale> --image-format=jpeg` per frame, each on a free port, and answers with
+every frame as an image, then, past 4 frames, one sheet of them all (4 across, 320 px each,
+labelled `frame <n>`), then a text naming each frame's file in order. The frames go in the
+stage's folder, beside the build: `stills/<composition>/<frame>.jpeg`, the sheet at
+`stills/<composition>.jpeg`, the CLI's output at `stills/<composition>.log`; the bundle is
+deleted. A call has 300 s for all of it; a step past that, or one that fails, answers with an
+error carrying the log's last 40 lines.
+
+Stills draw in software with Chrome Headless Shell, never on the GPU, so they never wait for or
+hold the gpu Slot a render's chunks take: a builder is never stuck behind another run's long
+render, at the cost of a 3D frame drawing about 10x slower, which a few frames afford.
+
 ## In Docker
 
 Kriflow's image carries Node and the shared libraries and fonts Chrome needs, not Remotion or
@@ -124,6 +163,8 @@ suite's `npm` and `npx` that only log), gives it to a world and renders over std
 fake Remotion CLI on `PATH` (`fake_npx.py`), all in the real connector sandbox, where an
 agent-written project trying to read the data directory's keys or the world's other assets, write
 outside its stage or into a Template and reach the internet is refused each time and each block
-logged. One real render runs when you opt in:
-`KRIFLOW_REMOTION_PROJECT=<project> KRIFLOW_REMOTION_COMPOSITION=<id> uv run pytest --no-cov connectors/remotion_render -k real_render` in a core checkout that `tools/test_packages.sh <core> remotion_render` has filled,
-the project copied into a world's Templates first.
+logged. The fake CLI also fakes `still`, an ffmpeg probe and the PNG pipe contact sheets read.
+One real render (with its contact sheets) and one real `stills` call run when you opt in:
+`KRIFLOW_REMOTION_PROJECT=<project> KRIFLOW_REMOTION_COMPOSITION=<id> uv run pytest --no-cov connectors/remotion_render -k real` in a core checkout that `tools/test_packages.sh <core> remotion_render` has filled,
+the project copied into a world's Templates (or a build folder) first, with the Chrome Headless
+Shell its CLI downloaded beside it (the test install's npm is fake).

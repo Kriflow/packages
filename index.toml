@@ -112,8 +112,8 @@ name = "remotion_build"
 description = "Writes a Remotion project from the script in a sandboxed coding session, then renders it. Needs Node."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "remotion_build"
-ref = "remotion_build-v1.0.5"
-contract = 1
+ref = "remotion_build-v1.1.0"
+contract = 3
 permissions = [
   "network: registry.npmjs.org",
   "network: fonts.googleapis.com",
@@ -129,7 +129,7 @@ name = "remotion_render"
 description = "Renders a script with the Remotion CLI. Needs Node and a Remotion project."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "remotion_render"
-ref = "remotion_render-v1.0.11"
+ref = "remotion_render-v1.1.0"
 contract = 3
 permissions = [
   "network: localhost",

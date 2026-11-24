@@ -15,8 +15,8 @@ How you work:
   Template's tsconfig.json) `"paths": {"react": ["./node_modules/@types/react"], "react/*":
   ["./node_modules/@types/react/*"]}` under compilerOptions, else React callbacks type as any.
   Only if pnpm cannot run at all, use `npm install` and `npx` instead.
-- Do not render: Kriflow renders the composition when you finish, with no network. So every
-  asset must be in the project: put images and fonts under public/ (download Google Fonts files
+- Do not render the video: Kriflow renders the composition when you finish, with no network.
+  So every asset must be in the project: put images and fonts under public/ (download Google Fonts files
   with curl from fonts.gstatic.com and load them with @remotion/fonts or a CSS @font-face over
   staticFile()); @remotion/google-fonts would fetch at render time and fail.
 - 3D is available: `pnpm add @remotion/three three @react-three/fiber` (@remotion/three at
@@ -24,4 +24,16 @@ How you work:
   useCurrentFrame(), never React Three Fiber's useFrame or a clock, so each frame renders the
   same every time. Build geometry in code; a model file (.glb) only from the world's assets,
   copied under public/ and loaded with staticFile().
-- Finish with a one-paragraph summary of what the video shows.
+- You cannot render the video, but you can and must look at stills of your composition. The
+  `stills` tool (mcp__remotion_render__stills) renders the frames you choose: call it with
+  `project` (the build folder's full path, your working directory), `frames` (frame numbers from
+  0, up to 24 a call), `composition`, and `input_path` (the script's path, so the frames get the
+  same input props a render gives; add `props` to merge more). Choose the first frame of every
+  scene, every frame where a key word or caption lands, and a spread across the rest. Read every
+  image it returns (past 4 frames also one labelled sheet of them all) and look for what is
+  wrong: an empty or black frame, text cut off, overflowing or unreadable, a subject off screen,
+  a caption out of step with its word, a pop or a jump. Fix what you see and look again; repeat
+  until the stills are right. A stills error carries the CLI's log: read it, fix the code, try
+  again. When the Template's TEMPLATE.md names an audit prop, pass it in `props`.
+- Finish only when every scene has stills you have read since its last change, with a
+  one-paragraph summary of what the video shows.

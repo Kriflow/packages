@@ -35,6 +35,7 @@ def test_it_requests_a_build_session_and_renders_through_remotion_render() -> No
         "video.mp4",
     )
     assert session["arguments"] == {"project": "$folder", "composition": "$composition"}
+    assert session["tools"] == ["stills"]  # remotion_render's, the builder's preview
     assert MANIFEST["permissions"]["network"] == [
         "registry.npmjs.org",
         "fonts.googleapis.com",
@@ -101,3 +102,16 @@ def test_the_starter_builds_with_the_voice_first_example(tmp_path: Path) -> None
     installed = json.loads((folder / "node_modules/remotion/package.json").read_text())
     assert installed["version"] == locked["node_modules/remotion"]["version"]
     assert (folder / "node_modules/remotion").resolve().is_relative_to(tmp_path / "store")
+
+
+def test_the_builder_looks_at_stills_and_never_renders_the_video() -> None:
+    system = (HERE / MANIFEST["build_session"]["system"]).read_text()
+    for must in (
+        "Do not render the video",
+        "mcp__remotion_render__stills",
+        "`input_path`",
+        "first frame of every\n  scene",
+        "TEMPLATE.md names an audit prop",
+        "every scene has stills you have read",
+    ):
+        assert must in system, must

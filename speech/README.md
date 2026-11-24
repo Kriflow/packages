@@ -164,7 +164,7 @@ its Setup, a JSON schema of its params, inputs, outputs, the `script` type, its 
 - Every part is heard back by Whisper: the engine's own `/v1/align`, or for an engine without
   one (Kokoro) the first engine of the list that has it. The check is there to catch a take cut
   short, so the words are compared loosely: without case or punctuation, a number in digits or
-  in words alike, letters spelled apart as one word ("G P S" is "GPS"), words that differ only in
+  in words alike, letters spelled apart as one word ("G P S" is "GPS"), digits read one by one with "oh" for zero as one number ("four oh two" is "402"), words that differ only in
   spaces alike ("load balancer", "loadbalancer"), and a word Whisper heard as one alike, as
   "sync" for "sink", counts; a word it heard nothing for, or something unlike, is missing. A part
   is said whole when at least 95% of its words were heard, two of its last three among them, the

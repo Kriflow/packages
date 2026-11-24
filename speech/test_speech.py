@@ -594,6 +594,13 @@ def test_digits_with_a_scale_word_or_a_decimal_are_heard_as_the_number_spelled()
     assert tokens("ten million") == tokens("10 million") == ["10000000"]
     assert tokens("the end point is a POST") == ["the", "end", "point", "is", "a", "post"]
 
+    # status codes read digit by digit with "oh" for zero (SystemDesign's payment video)
+    line = "It returns two oh one, four oh two on a decline, or two oh two when unknown."
+    assert heard(line, "It returns 201, 402 on a decline, or 202 when unknown.") == WHOLE
+    assert heard("we return four oh nine.", "we return 409.") == WHOLE
+    assert heard("we return four oh nine.", "we return 4-0-9.") == WHOLE
+    assert tokens("Oh, two oh") == ["oh", "2", "oh"]
+
 
 def test_letters_spelled_apart_are_heard_as_the_word_whisper_writes() -> None:
     """A script spells "G P S" for the engine; Whisper writes "GPS" (SystemDesign's

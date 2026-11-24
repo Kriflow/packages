@@ -168,7 +168,7 @@ name = "speech"
 description = "Voices a script, one take per scene, with word timings and cut points. Needs a speech engine (its README, Speech engines)."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "speech"
-ref = "speech-v1.3.5"
+ref = "speech-v1.3.6"
 contract = 3
 permissions = [
   "install_network: pypi.org",

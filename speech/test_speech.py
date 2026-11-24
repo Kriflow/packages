@@ -563,6 +563,35 @@ def test_a_take_ending_early_with_its_last_words_unheard_fails_the_check() -> No
     assert sp.hearing("The sink is where".split(), unlike, 4)["missing"] == ["sink"]
 
 
+def test_digits_with_a_scale_word_or_a_decimal_are_heard_as_the_number_spelled() -> None:
+    """Whisper writes "10 million" and "7.2" where a script spells "ten million" and "seven
+    point two" (SystemDesign's payment video failed its voice stage on the first)."""
+
+    def heard(want: str, said: str) -> dict[str, Any]:
+        stamps = [(w, float(i), i + 1.0) for i, w in enumerate(said.split())]
+        return sp.hearing(want.split(), stamps, len(stamps))
+
+    whole = {"ok": True, "coverage": 1.0, "missing": []}
+    line = "Assume ten million payments a day, with a tenfold peak."
+    assert heard(line, "Assume 10 million payments a day, with a tenfold peak.") == whole
+    assert heard(line, "Assume 10 ,000 ,000 payments a day, with a tenfold peak.") == whole
+    assert heard("about one point two million rows", "about 1.2 million rows") == whole
+    assert heard("about seven point two kilobytes each", "about 7.2 kilobytes each") == whole
+    assert heard("twenty two billion lines a year", "22 billion lines a year") == whole
+    assert heard("eighty six thousand four hundred seconds", "86 ,400 seconds") == whole
+    assert heard("about twelve hundred a second", "about 1 ,200 a second") == whole
+    assert heard("about twelve hundred a second", "about 1200 a second") == whole
+    assert heard("raised five billion dollars", "raised $5 billion dollars") == whole
+
+    def tokens(words: str) -> list[str]:
+        return [t for _, t in sp._spoken(words.split())]
+
+    assert tokens("one two") == ["1", "2"]
+    assert tokens("10 20 million") == ["10", "20000000"]
+    assert tokens("ten million") == tokens("10 million") == ["10000000"]
+    assert tokens("the end point is a POST") == ["the", "end", "point", "is", "a", "post"]
+
+
 def test_a_line_never_said_whole_fails_the_stage_naming_scene_line_and_missing_words() -> None:
     seen: list[str] = []
     with (

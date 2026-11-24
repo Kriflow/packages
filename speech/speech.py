@@ -42,6 +42,7 @@ import tomllib
 import wave
 from array import array
 from collections.abc import Callable, Iterator
+from decimal import Decimal
 from itertools import accumulate
 from pathlib import Path
 from typing import IO, Any
@@ -761,8 +762,9 @@ _SCALES = {"hundred": 100, "thousand": 1000, "million": 10**6, "billion": 10**9}
 def _spoken(words: list[str], heard: bool = False) -> list[tuple[list[int], str]]:
     """Words as compared when a take is heard back, each token with the words it stands for:
     without case or punctuation, hyphens apart, and a number as its value, since Whisper writes
-    "100,000" or "1,500" where a script says "a hundred thousand" or "fifteen hundred"
-    (`heard` words come as "100 ,000", joined first)."""
+    "100,000", "1,500", "10 million" or "7.2" where a script says "a hundred thousand",
+    "fifteen hundred", "ten million" or "seven point two" (`heard` words come as "100 ,000",
+    joined first)."""
     if heard:
         words = re.sub(r"(\d) ,(?=\d)", r"\1,", " ".join(words)).split()
     raw: list[tuple[int, str, bool]] = []  # (word, token, a clause ends after it)
@@ -781,33 +783,53 @@ def _spoken(words: list[str], heard: bool = False) -> list[tuple[list[int], str]
     k = 0
     while k < len(raw):
         owners, total, current, n = [], 0, 0, k
+        place: Decimal | None = None  # after "point": the next spelled digit's place
         while n < len(raw):
             i, token, stop = raw[n]
             scale = _SCALES.get(token)
             a = token in ("a", "an") and n + 1 < len(raw) and raw[n + 1][1] in _SCALES
-            value = 1 if a else _VALUES.get(token)
+            digits = token[0].isdigit()  # Whisper's "10" of "10 million", "7.2"
+            value = Decimal(token) if digits else 1 if a else _VALUES.get(token)
             if (
-                value is not None
+                token == "point"
                 and n > k
-                and not (
-                    current % 100 == 0 or current % 10 == 0 and current % 100 >= 20 and value < 10
-                )
+                and place is None
+                and n + 1 < len(raw)
+                and _VALUES.get(raw[n + 1][1], 10) < 10
             ):
-                break  # "one two" is two numbers
-            if value is None and not (scale and n > k):
-                break
-            if scale == 100:
-                current = max(current, 1) * 100
-            elif scale:
-                total, current = total + max(current, 1) * scale, 0
+                place = Decimal("0.1")  # "seven point two"
+            elif place is not None and not digits and value is not None and value < 10:
+                current, place = current + value * place, place / 10
             else:
-                current += value or 0
+                if (
+                    value is not None
+                    and n > k
+                    and (
+                        digits  # "one 2" is two numbers, and "10 20"
+                        or place is not None
+                        or raw[n - 1][1][0].isdigit()  # only a scale word follows digits
+                        or not (
+                            current % 100 == 0
+                            or (current % 10 == 0 and current % 100 >= 20 and value < 10)
+                        )
+                    )
+                ):
+                    break  # "one two" is two numbers
+                if value is None and not (scale and n > k):
+                    break
+                if scale == 100:
+                    current = max(current, 1) * 100
+                elif scale:
+                    total, current, place = total + max(current, 1) * scale, 0, None
+                else:
+                    current += value or 0
             owners.append(i)
             n += 1
             if stop:
                 break
         if n > k:
-            out.append((owners, str(total + current)))
+            number = Decimal(total + current)
+            out.append((owners, str(int(number)) if number == int(number) else str(number)))
             k = n
         else:
             out.append(([raw[k][0]], raw[k][1]))

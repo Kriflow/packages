@@ -817,8 +817,9 @@ def _spoken(words: list[str], heard: bool = False) -> list[tuple[list[int], str]
 
 def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
     """Whether a part was said whole: `ok` when Whisper `heard` at least COVERAGE of the words
-    it should say (`want`, compared as `_spoken`; one heard spelled a little differently, as
-    "Reddis", or run together, as "Goodnight", counts) and two of its last
+    it should say (`want`, compared as `_spoken`; a word Whisper heard as one that sounds alike,
+    as "sync" for "sink" or "Pre-plays" for "Replays", counts: only words it heard nothing
+    for, or something unlike, are missing, as a take cut short has them) and two of its last
     three, the last heard word ending within END_SLACK of its last sound at `end` seconds. With
     the share heard as `coverage` and the words it did not hear as `missing`."""
     owner = _spoken(want)
@@ -826,7 +827,9 @@ def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
     b = [t for _, t in _spoken([h[0] for h in heard], heard=True)]
     hit = [False] * len(a)
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
-        close = difflib.SequenceMatcher(a="".join(a[i1:i2]), b="".join(b[j1:j2])).ratio() >= 0.8
+        # ponytail: letters alike stand in for sounds alike; a phonetic key if mishearings slip
+        alike = difflib.SequenceMatcher(a="".join(a[i1:i2]), b="".join(b[j1:j2])).ratio()
+        close = alike >= 0.5 and abs((i2 - i1) - (j2 - j1)) <= 1
         if op == "equal" or op == "replace" and close:
             hit[i1:i2] = [True] * (i2 - i1)
     found = [True] * len(want)  # a word of only punctuation is never heard

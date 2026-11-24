@@ -553,6 +553,14 @@ def test_a_take_ending_early_with_its_last_words_unheard_fails_the_check() -> No
     stamps = [(w, float(i), i + 1.0) for i, w in enumerate(digits.split())]
     assert sp.hearing(spelled, stamps, len(stamps)) == {"ok": True, "coverage": 1.0, "missing": []}
     assert [t for _, t in sp._spoken("one two three".split())] == ["1", "2", "3"]
+    # what Whisper really heard on SystemDesign's s07: words misheard, none left out
+    want = "The sink is where people slip. Replays are safe because writes are idempotent.".split()
+    heard = "The sync is where people slip. Pre -plays are safe because rights are a dempotent."
+    stamps = [(w, float(i), i + 1.0) for i, w in enumerate(heard.split())]
+    assert sp.hearing(want, stamps, len(stamps))["coverage"] == 1.0
+    # but a word heard as something unlike it, or nothing, is missing
+    unlike = [(w, float(i), i + 1.0) for i, w in enumerate("The cat is where".split())]
+    assert sp.hearing("The sink is where".split(), unlike, 4)["missing"] == ["sink"]
 
 
 def test_a_line_never_said_whole_fails_the_stage_naming_scene_line_and_missing_words() -> None:

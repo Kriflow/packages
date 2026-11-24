@@ -163,8 +163,8 @@ its Setup, a JSON schema of its params, inputs, outputs, the `script` type, its 
   the lines with their `pause_after`.
 - Every part is heard back by Whisper: the engine's own `/v1/align`, or for an engine without
   one (Kokoro) the first engine of the list that has it. The part passes when at least 95% of
-  its words were heard (without case or punctuation; a word heard spelled a little differently,
-  or two run together, counts), two of its last three among them, the last ending within 1.5 s
+  its words were heard (without case or punctuation, a number in digits or in words alike; a
+  word heard spelled a little differently, or two run together, counts), two of its last three among them, the last ending within 1.5 s
   of its sound, which does not end cut off mid-sound. A part that fails is voiced again with the
   next seed (a random one without `seed`), up to 4 tries, and the best kept; still failing, the
   stage fails naming the scene, line and words missing. With no engine to hear them (Kokoro

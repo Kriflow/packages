@@ -749,19 +749,57 @@ def parts(say: str, most: int = MAX_WORDS) -> list[str]:
     return out
 
 
+_ONES = (
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+    " fifteen sixteen seventeen eighteen nineteen"
+).split()
+_TENS = "twenty thirty forty fifty sixty seventy eighty ninety".split()
+_SCALES = ((10**9, "billion"), (10**6, "million"), (1000, "thousand"), (100, "hundred"))
+
+
+def _number(n: int) -> list[str]:
+    """`n` in words, as a script spells it: 200000 is two hundred thousand."""
+    if n < 20:
+        return [_ONES[n]]
+    if n < 100:
+        return [_TENS[n // 10 - 2]] + ([_ONES[n % 10]] if n % 10 else [])
+    size, name = next((v, k) for v, k in _SCALES if n >= v)
+    return [*_number(n // size), name] + (_number(n % size) if n % size else [])
+
+
+def _spoken(word: str) -> list[str]:
+    """A word as compared when a take is heard back: without case or punctuation, hyphens
+    apart, and a number in words, since Whisper writes "200,000" where a script says "two hundred
+    thousand" (and "50%" where it says "fifty percent")."""
+    out: list[str] = []
+    for piece in word.lower().split("-"):
+        number = re.fullmatch(r"\$?(\d[\d,]*)(?:\.(\d+))?(%?)", piece.strip(".,;:!?\"'()"))
+        if number and len(digits := number[1].replace(",", "")) < 13:
+            out += _number(int(digits))
+            out += ["point", *(_ONES[int(d)] for d in number[2])] if number[2] else []
+            out += ["percent"] if number[3] else []
+        elif norm := _norm(piece):
+            out.append(norm)
+    return out
+
+
 def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
     """Whether a part was said whole: `ok` when Whisper `heard` at least COVERAGE of the words
-    it should say (`want`, compared without case or punctuation; one heard spelled a little
-    differently, as "Reddis", or run together, as "Goodnight", counts) and two of its last
+    it should say (`want`, compared as `_spoken`; one heard spelled a little differently, as
+    "Reddis", or run together, as "Goodnight", counts) and two of its last
     three, the last heard word ending within END_SLACK of its last sound at `end` seconds. With
     the share heard as `coverage` and the words it did not hear as `missing`."""
-    a = [_norm(w) for w in want]
-    b = [w for h in heard if (w := _norm(h[0]))]
-    found = [not w for w in a]  # a word of only punctuation is never heard
+    owner = [(i, t) for i, w in enumerate(want) for t in _spoken(w)]
+    a = [t for _, t in owner]
+    b = [t for h in heard for t in _spoken(h[0])]
+    hit = [False] * len(a)
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
         close = difflib.SequenceMatcher(a="".join(a[i1:i2]), b="".join(b[j1:j2])).ratio() >= 0.8
         if op == "equal" or op == "replace" and close:
-            found[i1:i2] = [True] * (i2 - i1)
+            hit[i1:i2] = [True] * (i2 - i1)
+    found = [True] * len(want)  # a word of only punctuation is never heard
+    for (i, _), h in zip(owner, hit, strict=True):
+        found[i] = found[i] and h
     coverage = sum(found) / len(found) if found else 1.0
     tail = found[-3:]
     ends = bool(heard) and heard[-1][2] >= end - END_SLACK

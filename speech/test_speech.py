@@ -648,6 +648,10 @@ def test_a_take_heard_under_the_floor_or_without_its_end_still_fails() -> None:
     assert gappy["ok"] is False and gappy["cut"] is True  # 60%: under FLOOR
     tail = sp.hearing(words, stamps[:-2], 5.0)
     assert tail["ok"] is False and tail["cut"] is True
+    # its first words unheard, the rest heard to the end: Whisper dropped a short clip's start
+    # (SystemDesign's payment s18, "Then capture pending, captured, and maybe refunded.")
+    start = sp.hearing(words, stamps[4:], 5.0)
+    assert start["ok"] is False and start["cut"] is False and start["coverage"] == 0.6
     some = sp.hearing(words, [s for i, s in enumerate(stamps) if i != 3], 5.0)
     assert some == {"ok": False, "cut": False, "coverage": 0.9, "missing": ["w3"]}
 

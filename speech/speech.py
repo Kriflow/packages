@@ -871,9 +871,10 @@ def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
     as "sync" for "sink" or "Pre-plays" for "Replays", counts: only words it heard nothing
     for, or something unlike, are missing, as a take cut short has them) and two of its last
     three, the last heard word ending within END_SLACK of its last sound at `end` seconds; `cut`
-    when it was cut off (under FLOOR heard, or not that end). Letters spelled apart are one word
-    ("G P S" is "GPS"), and words that differ only in spaces count ("loadbalancer"). With the
-    share heard as `coverage` and the words it did not hear as `missing`."""
+    when it was cut off (under FLOOR heard from its first heard word on, or not that end).
+    Letters spelled apart are one word ("G P S" is "GPS"), and words that differ only in spaces
+    count ("loadbalancer"). With the share heard as `coverage` and the words it did not hear
+    as `missing`."""
     owner = _spoken(want)
     a = [t for _, t in owner]
     b = [t for _, t in _spoken([h[0] for h in heard], heard=True)]
@@ -892,7 +893,12 @@ def hearing(want: list[str], heard: Stamps, end: float) -> dict[str, Any]:
     coverage = sum(found) / len(found) if found else 1.0
     tail = found[-3:]
     ends = bool(heard) and heard[-1][2] >= end - END_SLACK
-    cut = coverage < FLOOR or sum(tail) < min(2, len(tail)) or not ends
+    # words unheard before the first heard are no cut-off: Whisper drops a short clip's start
+    start = next((i for i, w in enumerate(want) if found[i] and _norm(w)), len(found))
+    rest = found[start:]
+    cut = (
+        (sum(rest) / len(rest) if rest else 0) < FLOOR or sum(tail) < min(2, len(tail)) or not ends
+    )
     return {
         "ok": coverage >= COVERAGE and not cut,
         "cut": cut,

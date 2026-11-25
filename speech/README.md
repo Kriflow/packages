@@ -172,7 +172,7 @@ its Setup, a JSON schema of its params, inputs, outputs, the `script` type, its 
   voiced again with the next seed (a random one without `seed`), up to 4 tries, and the best
   kept. Only a cut-off fails the stage, naming the scene, line and words missing: the part's end
   unheard (that tail and end rule, or its sound ending mid-sound) or under 70% of its words
-  heard. A part between 70% and 95% with its end heard is kept, and a warning names the scene,
+  heard from the first one Whisper heard on (Whisper can drop a short clip's first words). A part between 70% and 95% with its end heard is kept, and a warning names the scene,
   line, coverage and words missing (since speech 1.3.7; before, it failed the stage). With no engine to hear them (Kokoro
   alone, or a Chatterbox engine from before 1.3.5) the takes are kept as before and `warnings`
   says they were not checked, rather than pass them quietly.

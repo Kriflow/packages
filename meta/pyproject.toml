@@ -1,7 +1,7 @@
-# The Meta connector's own uv project, outside the Swarmify workspace: its install step syncs
+# The Meta connector's own uv project, outside the Kriflow workspace: its install step syncs
 # these into the installed version's folder (ADR 0026).
 [project]
-name = "swarmify-meta"
+name = "kriflow-meta"
 version = "1.0.1"
 description = "Publishes Reels to Instagram and a Facebook Page through the Graph API"
 requires-python = ">=3.12"

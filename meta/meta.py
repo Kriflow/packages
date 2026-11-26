@@ -2,7 +2,7 @@
 Instagram and a Facebook Page as a Connector Package (ADR 0019).
 
 The account is the Manifest's world-scoped `meta` oauth field, finished by this package (ADR
-0029): Swarmify sends the operator to Facebook Login for Business, exchanges the code, then calls
+0029): Kriflow sends the operator to Facebook Login for Business, exchanges the code, then calls
 `signed_in` with the short-lived user token and the Meta app's client ID and secret. `signed_in`
 swaps it for a long-lived user token (`fb_exchange_token`), lists the person's Pages
 (`me/accounts`) and answers the token of the one Page with a linked Instagram account. A Page
@@ -57,7 +57,16 @@ every post an earlier try made carries `already_posted`.
 whichever connector posted it. An Instagram link names a shortcode, not a media ID, so the
 account's latest media are listed to find it. A Platform whose insights the sign-in may not read
 (Meta's permission error codes 10 and 200 to 299) is skipped, and the answer's `_notice` names
-the missing permission (`instagram_manage_insights`, `read_insights`) instead of failing."""
+the missing permission (`instagram_manage_insights`, `read_insights`) instead of failing.
+
+`comments` reads the comments of one of the account's Instagram media (its ID or its link):
+`<media>/comments`, top-level comments only, newest first, up to 50 a page, followed by cursor
+for up to COMMENT_PAGES pages; `after` is the cursor to go on from when more remain. With
+`replies`, each comment's replies follow it (its `replies` field, then `<comment>/replies` past
+the first page). Meta leaves out comments of users the account restricted. `reply` posts a
+public reply to one comment (`<comment>/replies` with `message`) and answers its id. Both need
+`instagram_manage_comments` (with `instagram_basic` and `pages_read_engagement`); a sign-in
+without it fails saying to add it and sign in again."""
 
 import hashlib
 import json
@@ -93,6 +102,11 @@ INSIGHTS_PERMISSION = {
     "instagram": "Instagram insights are not read: the sign-in lacks instagram_manage_insights",
     "facebook": "Facebook Reel plays are not read: the sign-in lacks read_insights",
 }
+COMMENTS_FIX = (
+    "; reading and replying to comments needs instagram_manage_comments (with instagram_basic"
+    " and pages_read_engagement): add it to the Meta app's login configuration, then sign in to"
+    " Meta again on the Connectors page"
+)
 INSIGHTS_FIX = (
     "; add it to the Meta app's login configuration, then sign in to Meta again on the"
     " Connectors page."
@@ -243,11 +257,15 @@ def signed_in(access_token: str, client_id: str = "", client_secret: str = "") -
     return {"access_token": token, "expires_at": None}
 
 
-def account_of(http: httpx.Client, env: Mapping[str, str]) -> dict[str, str | None]:
-    """The Page the token is for and its linked Instagram account (None without one)."""
+def token_of(env: Mapping[str, str]) -> str:
     if not env.get(TOKEN):
         raise ToolError("auth_failed: sign in to Meta on the Connectors page")
-    me = _get(http, "me", "reading the Page", env[TOKEN], fields="id,instagram_business_account")
+    return env[TOKEN]
+
+
+def account_of(http: httpx.Client, env: Mapping[str, str]) -> dict[str, str | None]:
+    """The Page the token is for and its linked Instagram account (None without one)."""
+    me = _get(http, "me", "reading the Page", token_of(env), fields="id,instagram_business_account")
     instagram = (me.get("instagram_business_account") or {}).get("id")
     return {"page": str(me["id"]), "instagram": str(instagram) if instagram else None}
 
@@ -947,6 +965,118 @@ def outcomes_of(http: httpx.Client, env: Mapping[str, str], posts: list[dict[str
 def outcomes(posts: list[dict[str, Any]]) -> dict[str, Any]:
     with httpx.Client(timeout=60.0) as http:
         return outcomes_of(http, os.environ, posts)
+
+
+# Comments: read one Instagram media's comments, reply to one
+
+
+COMMENT_FIELDS = "id,from,username,text,timestamp,like_count,parent_id"
+COMMENTS_PAGE = 50  # Meta's most comments a page
+COMMENT_PAGES = 20  # pages a call reads before answering `after` to go on from
+
+
+def _edge(
+    http: httpx.Client, token: str, path: str, what: str, fields: str, after: str = ""
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Up to COMMENT_PAGES pages of a list from the cursor `after`, and the cursor to go on
+    from (None when Meta has no more)."""
+    found: list[dict[str, Any]] = []
+    for _ in range(COMMENT_PAGES):
+        params = {"fields": fields, "limit": str(COMMENTS_PAGE)}
+        if after:
+            params["after"] = after
+        listed = _call(http, "GET", path, what, token, params)
+        found += listed.get("data") or []
+        paging = listed.get("paging") or {}
+        after = (paging.get("cursors") or {}).get("after", "")
+        if not paging.get("next") or not after:
+            return found, None
+    return found, after
+
+
+def _comment(c: Mapping[str, Any], parent: str | None = None) -> dict[str, Any]:
+    who = c.get("from") or {}
+    return {
+        "id": str(c["id"]),
+        "account": who.get("id"),
+        "username": who.get("username") or c.get("username"),
+        "text": c.get("text") or "",
+        "timestamp": c.get("timestamp"),
+        "like_count": int(c.get("like_count") or 0),
+        "parent_id": c.get("parent_id") or parent,
+    }
+
+
+def _media_id(http: httpx.Client, env: Mapping[str, str], media: str) -> str:
+    """A media ID as given, or the ID of the account's media an Instagram link names."""
+    if not (m := _INSTAGRAM.match(media)):
+        return media
+    instagram = account_of(http, env)["instagram"]
+    found = media_ids(http, token_of(env), str(instagram), {m[1]}) if instagram else {}
+    if m[1] not in found:
+        raise ToolError(f"no post {media} among the Instagram account's latest media")
+    return found[m[1]]
+
+
+def comments_of(
+    http: httpx.Client, env: Mapping[str, str], media: str, replies: bool = False, after: str = ""
+) -> dict[str, Any]:
+    """A media's comments newest first, each with its replies after it when asked, and the
+    cursor to go on from when more remain."""
+    token, what = token_of(env), "reading the comments"
+    fields = COMMENT_FIELDS
+    if replies:
+        fields += f",replies.limit({COMMENTS_PAGE}){{{COMMENT_FIELDS}}}"
+    try:
+        path = f"{_media_id(http, env, media)}/comments"
+        top, more = _edge(http, token, path, what, fields, after)
+        out = []
+        for c in top:
+            out.append(_comment(c))
+            if not replies:
+                continue
+            nested = c.get("replies") or {}
+            under = list(nested.get("data") or [])
+            paging = nested.get("paging") or {}
+            if paging.get("next") and (cursor := (paging.get("cursors") or {}).get("after")):
+                # ponytail: COMMENT_PAGES more pages of one comment's replies, the rest cut
+                rest, _ = _edge(http, token, f"{c['id']}/replies", what, COMMENT_FIELDS, cursor)
+                under += rest
+            out += [_comment(r, str(c["id"])) for r in under]
+    except Unpermitted as exc:
+        raise Unpermitted(f"{exc}{COMMENTS_FIX}") from exc
+    return {"comments": out, "after": more}
+
+
+def reply_to(http: httpx.Client, env: Mapping[str, str], comment: str, text: str) -> dict[str, str]:
+    """Post `text` as a public reply to an Instagram comment, the reply's id."""
+    if not text.strip():
+        raise ToolError("a reply needs text")
+    token = token_of(env)
+    try:
+        sent = _call(
+            http, "POST", f"{comment}/replies", "replying to the comment", token, {"message": text}
+        )
+    except Unpermitted as exc:
+        raise Unpermitted(f"{exc}{COMMENTS_FIX}") from exc
+    return {"id": str(sent["id"])}
+
+
+@mcp.tool(
+    description="The comments of one of the account's Instagram media (its ID or link), newest"
+    " first: id, account (the commenter's id), username, text, timestamp, like_count, parent_id;"
+    " with replies, each comment's replies after it. `after` names where to go on from when more"
+    " remain. Comments of restricted users are not shown."
+)
+def comments(media: str, replies: bool = False, after: str = "") -> dict[str, Any]:
+    with httpx.Client(timeout=60.0) as http:
+        return comments_of(http, os.environ, media, replies, after)
+
+
+@mcp.tool(description="Reply publicly to an Instagram comment; answers the reply's id.")
+def reply(comment: str, text: str) -> dict[str, str]:
+    with httpx.Client(timeout=30.0) as http:
+        return reply_to(http, os.environ, comment, text)
 
 
 if __name__ == "__main__":  # pragma: no cover - started as a subprocess

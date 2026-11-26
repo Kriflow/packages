@@ -1055,6 +1055,12 @@ def thread(refused: dict[str, Any] | None = None) -> Any:
         if path == "c3/replies" and request.method == "POST":
             if dict(parse_qsl(request.content.decode())) == {"message": "Thanks!"}:
                 return httpx.Response(200, json={"id": "c9"})
+        if path == "c9" and request.method == "DELETE":
+            return httpx.Response(200, json={"success": True})
+        if path == "c8" and request.method == "DELETE":  # already deleted
+            message = "Unsupported delete request. Object with ID 'c8' does not exist"
+            error = {"message": message, "type": "GraphMethodException", "code": 100}
+            return httpx.Response(400, json={"error": {**error, "error_subcode": 33}})
         return httpx.Response(404, json={"error": {"message": "unknown path", "code": 803}})
 
     graph.seen = seen  # type: ignore[attr-defined]
@@ -1119,6 +1125,7 @@ def test_reading_or_replying_without_the_comments_permission_says_to_sign_in_aga
     for read in (
         lambda http: meta.comments_of(http, {"META_ACCESS_TOKEN": "t"}, "m1"),
         lambda http: meta.reply_to(http, {"META_ACCESS_TOKEN": "t"}, "c3", "Thanks!"),
+        lambda http: meta.delete_comment_of(http, {"META_ACCESS_TOKEN": "t"}, "c9"),
     ):
         with httpx.Client(transport=httpx.MockTransport(thread(refused=UNPERMITTED))) as http:
             with pytest.raises(ToolError) as refused:
@@ -1145,6 +1152,31 @@ def test_a_reply_posts_once_and_answers_its_id() -> None:
         ("POST", "/v26.0/c3/replies"),
         ("POST", "/v26.0/gone/replies"),
     ]
+
+
+def test_deleting_a_comment_answers_whether_it_was_there() -> None:
+    graph = thread()
+    env = {"META_ACCESS_TOKEN": "page-tok"}
+    with httpx.Client(transport=httpx.MockTransport(graph)) as http:
+        assert meta.delete_comment_of(http, env, "c9") == {"deleted": True}
+        assert meta.delete_comment_of(http, env, "c8") == {"deleted": False}  # a retry is safe
+        with pytest.raises(ToolError) as failed:  # any other error, plainly
+            meta.delete_comment_of(http, env, "c3")
+        with pytest.raises(ToolError, match="needs its id"):
+            meta.delete_comment_of(http, env, " ")
+        with pytest.raises(ToolError, match="^auth_failed"):
+            meta.delete_comment_of(http, {}, "c9")
+    assert str(failed.value) == "deleting the comment failed (404): unknown path"
+    assert [(r.method, r.url.path) for r in graph.seen] == [
+        ("DELETE", "/v26.0/c9"),
+        ("DELETE", "/v26.0/c8"),
+        ("DELETE", "/v26.0/c3"),
+    ]
+    assert graph.seen[0].headers["authorization"] == "OAuth page-tok"
+    expired = {"message": "Error validating access token", "type": "OAuthException", "code": 190}
+    with httpx.Client(transport=httpx.MockTransport(thread(refused=expired))) as http:
+        with pytest.raises(ToolError, match="^auth_failed"):
+            meta.delete_comment_of(http, env, "c9")
 
 
 def test_a_refused_token_fails_reading_comments_as_an_auth_failure() -> None:
@@ -1204,6 +1236,7 @@ def test_the_installed_package_answers_over_stdio_in_its_sandbox(tmp_path: Path)
     assert sorted(t.name for t in connectors.transport.list_tools(found, {})) == [
         "account",
         "comments",
+        "delete_comment",
         "outcomes",
         "preview",
         "publish",

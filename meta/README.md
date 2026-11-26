@@ -8,7 +8,8 @@ has not decided otherwise. Everything Kriflow knows of it is `kriflow-connector.
 
 It posts Reels to Instagram and the Facebook Page, a retry never posts twice, and it reads
 back their views as Outcomes. It also reads the comments of an Instagram post and replies to one
-(`comments`, `reply`), for whoever calls its tools.
+(`comments`, `reply`) and deletes a comment of its own (`delete_comment`), for whoever calls its
+tools.
 
 ## The stage
 
@@ -132,7 +133,7 @@ and marks the account **Needs sign-in**; sign in again from the Connectors page.
 the login configuration needed no comment permissions: add `instagram_manage_comments` and
 `pages_manage_engagement` to it and sign in again once, or the `comment` is recorded as failed.
 Before 1.2.0 it needed no `instagram_manage_insights`: add it and sign in again, or Instagram's
-Outcomes are left out with a notice. From 1.4.0 `comments` and `reply` need `instagram_manage_comments` too
+Outcomes are left out with a notice. From 1.4.0 `comments` and `reply` (and from 1.5.0 `delete_comment`) need `instagram_manage_comments` too
 (with `instagram_basic` and `pages_read_engagement`, already listed): a login configuration made
 before 1.1.0 lacks it, so add it and sign in again once, or both fail saying so.
 
@@ -176,6 +177,11 @@ before 1.1.0 lacks it, so add it and sign in again once, or both fail saying so.
   failed (<status>): <Meta's message>`); a refused token fails with `auth_failed`, and a missing
   permission adds what to add and to sign in again. A failed reply is never retried by the
   connector, so a caller retrying it may reply twice.
+- `delete_comment` takes `comment` (a comment's `id`) and deletes it (`DELETE <comment>`): a
+  comment the account wrote, such as one of its replies, or any comment on its own media. It
+  answers `deleted: true`, or `deleted: false` when Meta says the comment does not exist (already
+  deleted), so a caller may retry it. Any other error is answered as it is (`deleting the comment
+  failed (<status>): <Meta's message>`), with `auth_failed` and the permission hint as for `reply`.
 
 A stage that posts only a Facebook draft (`platforms: [facebook]`, `visibility: draft`) posts
 privately and needs no gate (`private_when`); every stage with Instagram is gated.
@@ -196,7 +202,8 @@ link, posts left out, one post's error, and a missing insights permission answer
 notice per Platform. Then `comments` and `reply` against a fake comment thread: every page
 of top-level comments and their fields, replies after their comment across their own pages,
 stopping after the pages with the cursor to go on from, a post's link, a missing permission,
-Meta's error, empty text and a refused token. Then the package installed through the
+Meta's error, empty text and a refused token; `delete_comment` deleting, a comment already
+gone, Meta's other errors and a refused token. Then the package installed through the
 real install path, answering over stdio MCP in its sandbox, and a workflow with an Instagram stage
 and no gate refused when saved. Run it with `tools/test_packages.sh <core checkout> meta` from the repository
 root.

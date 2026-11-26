@@ -1,11 +1,11 @@
 # The Meta connector (README.md beside this file). A default package: Kriflow installs it from
 # this folder and enables it for every world that has not decided otherwise.
 name = "meta"
-version = "1.4.0"
+version = "1.5.0"
 # 3: this Manifest is named kriflow-connector.toml, which cores from contract 3 read.
 contract = 3
 label = "Meta"
-about = "Posts Reels to Instagram and a Facebook Page through the Graph API, reads the comments of an Instagram post and replies to one."
+about = "Posts Reels to Instagram and a Facebook Page through the Graph API, reads the comments of an Instagram post, replies to one and deletes its own."
 kind = "publish"
 icon = "icon.svg"
 stage_types = ["connector"]

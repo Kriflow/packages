@@ -64,9 +64,11 @@ the missing permission (`instagram_manage_insights`, `read_insights`) instead of
 for up to COMMENT_PAGES pages; `after` is the cursor to go on from when more remain. With
 `replies`, each comment's replies follow it (its `replies` field, then `<comment>/replies` past
 the first page). Meta leaves out comments of users the account restricted. `reply` posts a
-public reply to one comment (`<comment>/replies` with `message`) and answers its id. Both need
-`instagram_manage_comments` (with `instagram_basic` and `pages_read_engagement`); a sign-in
-without it fails saying to add it and sign in again."""
+public reply to one comment (`<comment>/replies` with `message`) and answers its id.
+`delete_comment` deletes one comment the account wrote, or one on its own media (`DELETE
+<comment>`); a comment Meta says does not exist answers `deleted: false`, so a retry is safe.
+All three need `instagram_manage_comments` (with `instagram_basic` and `pages_read_engagement`);
+a sign-in without it fails saying to add it and sign in again."""
 
 import hashlib
 import json
@@ -103,9 +105,9 @@ INSIGHTS_PERMISSION = {
     "facebook": "Facebook Reel plays are not read: the sign-in lacks read_insights",
 }
 COMMENTS_FIX = (
-    "; reading and replying to comments needs instagram_manage_comments (with instagram_basic"
-    " and pages_read_engagement): add it to the Meta app's login configuration, then sign in to"
-    " Meta again on the Connectors page"
+    "; reading, replying to and deleting comments needs instagram_manage_comments (with"
+    " instagram_basic and pages_read_engagement): add it to the Meta app's login configuration,"
+    " then sign in to Meta again on the Connectors page"
 )
 INSIGHTS_FIX = (
     "; add it to the Meta app's login configuration, then sign in to Meta again on the"
@@ -1062,6 +1064,24 @@ def reply_to(http: httpx.Client, env: Mapping[str, str], comment: str, text: str
     return {"id": str(sent["id"])}
 
 
+def delete_comment_of(http: httpx.Client, env: Mapping[str, str], comment: str) -> dict[str, bool]:
+    """Delete one of the account's Instagram comments (or one on its media); `deleted` is False
+    when Meta says it no longer exists."""
+    if not comment.strip():
+        raise ToolError("deleting a comment needs its id")
+    token = token_of(env)
+    try:
+        _call(http, "DELETE", comment, "deleting the comment", token)
+    except Unpermitted as exc:
+        raise Unpermitted(f"{exc}{COMMENTS_FIX}") from exc
+    except ToolError as exc:
+        # ponytail: Meta's wording is the only sign it is gone (code 100 is also a bad request)
+        if "does not exist" in str(exc) and not str(exc).startswith("auth_failed"):
+            return {"deleted": False}
+        raise
+    return {"deleted": True}
+
+
 @mcp.tool(
     description="The comments of one of the account's Instagram media (its ID or link), newest"
     " first: id, account (the commenter's id), username, text, timestamp, like_count, parent_id;"
@@ -1077,6 +1097,15 @@ def comments(media: str, replies: bool = False, after: str = "") -> dict[str, An
 def reply(comment: str, text: str) -> dict[str, str]:
     with httpx.Client(timeout=30.0) as http:
         return reply_to(http, os.environ, comment, text)
+
+
+@mcp.tool(
+    description="Delete one Instagram comment the account wrote (or one on its own media) by id;"
+    " answers deleted, false when the comment no longer exists."
+)
+def delete_comment(comment: str) -> dict[str, bool]:
+    with httpx.Client(timeout=30.0) as http:
+        return delete_comment_of(http, os.environ, comment)
 
 
 if __name__ == "__main__":  # pragma: no cover - started as a subprocess

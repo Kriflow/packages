@@ -1008,6 +1008,183 @@ def test_outcomes_with_a_refused_token_are_an_auth_failure() -> None:
     assert str(refused.value).startswith("auth_failed")
 
 
+# comments: read one Instagram media's comments, reply to one
+
+
+def said(n: int, parent: str | None = None) -> dict[str, Any]:
+    """Comment `c<n>` as Meta answers it: its author under `from`, a reply with `parent_id`."""
+    c = {
+        "id": f"c{n}",
+        "from": {"id": f"u{n}", "username": f"fan{n}"},
+        "username": f"fan{n}",
+        "text": f"comment {n}",
+        "timestamp": f"2026-11-2{n}T10:00:00+0000",
+        "like_count": n,
+    }
+    return c | ({"parent_id": parent} if parent else {})
+
+
+def thread(refused: dict[str, Any] | None = None) -> Any:
+    """The Graph API's comments of media m1, newest first, a page of two and one more; c3 has
+    two replies, the second past its first page. `refused` is Meta's error every call answers."""
+    seen: list[httpx.Request] = []
+
+    def graph(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        path, q = request.url.path.removeprefix("/v26.0/"), request.url.params
+        if refused:
+            return httpx.Response(403, json={"error": refused})
+        if path == "me":
+            return httpx.Response(
+                200, json={"id": "p1", "instagram_business_account": {"id": "ig1"}}
+            )
+        if path == "ig1/media":
+            media = [{"id": "m1", "permalink": "https://www.instagram.com/reel/AbC/"}]
+            return httpx.Response(200, json={"data": media})
+        if path == "m1/comments":
+            c3 = said(3)
+            if "replies" in q["fields"]:
+                more = {"cursors": {"after": "r1"}, "next": "x"}
+                c3["replies"] = {"data": [said(5, "c3")], "paging": more}
+            if q.get("after") == "p2":
+                return httpx.Response(200, json={"data": [said(1)], "paging": {}})
+            more = {"cursors": {"after": "p2"}, "next": "x"}
+            return httpx.Response(200, json={"data": [c3, said(2)], "paging": more})
+        if path == "c3/replies" and request.method == "GET" and q["after"] == "r1":
+            return httpx.Response(200, json={"data": [said(4, "c3")]})
+        if path == "c3/replies" and request.method == "POST":
+            if dict(parse_qsl(request.content.decode())) == {"message": "Thanks!"}:
+                return httpx.Response(200, json={"id": "c9"})
+        if path == "c9" and request.method == "DELETE":
+            return httpx.Response(200, json={"success": True})
+        if path == "c8" and request.method == "DELETE":  # already deleted
+            message = "Unsupported delete request. Object with ID 'c8' does not exist"
+            error = {"message": message, "type": "GraphMethodException", "code": 100}
+            return httpx.Response(400, json={"error": {**error, "error_subcode": 33}})
+        return httpx.Response(404, json={"error": {"message": "unknown path", "code": 803}})
+
+    graph.seen = seen  # type: ignore[attr-defined]
+    return graph
+
+
+def comments(graph: Any, media: str = "m1", **kwargs: Any) -> dict[str, Any]:
+    with httpx.Client(transport=httpx.MockTransport(graph)) as http:
+        return meta.comments_of(http, {"META_ACCESS_TOKEN": "page-tok"}, media, **kwargs)
+
+
+def test_comments_page_through_every_top_level_comment_with_their_fields() -> None:
+    graph = thread()
+    answer = comments(graph)
+    assert answer["after"] is None
+    assert [c["id"] for c in answer["comments"]] == ["c3", "c2", "c1"]  # as Meta orders them
+    assert answer["comments"][0] == {
+        "id": "c3",
+        "account": "u3",
+        "username": "fan3",
+        "text": "comment 3",
+        "timestamp": "2026-11-23T10:00:00+0000",
+        "like_count": 3,
+        "parent_id": None,
+    }
+    first, second = graph.seen
+    assert first.headers["Authorization"] == "OAuth page-tok"
+    assert first.url.params["limit"] == "50" and "after" not in first.url.params
+    assert first.url.params["fields"] == meta.COMMENT_FIELDS  # no replies unless asked
+    assert second.url.params["after"] == "p2"
+
+
+def test_comments_with_replies_put_each_reply_after_its_comment() -> None:
+    answer = comments(thread(), replies=True)
+    assert [(c["id"], c["parent_id"]) for c in answer["comments"]] == [
+        ("c3", None),
+        ("c5", "c3"),
+        ("c4", "c3"),  # past the first page of c3's replies
+        ("c2", None),
+        ("c1", None),
+    ]
+
+
+def test_comments_stop_after_their_pages_and_say_where_to_go_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(meta, "COMMENT_PAGES", 1)
+    answer = comments(thread())
+    assert ([c["id"] for c in answer["comments"]], answer["after"]) == (["c3", "c2"], "p2")
+    answer = comments(thread(), after=answer["after"])
+    assert ([c["id"] for c in answer["comments"]], answer["after"]) == (["c1"], None)
+
+
+def test_comments_of_a_post_link_read_its_media() -> None:
+    answer = comments(thread(), "https://www.instagram.com/reel/AbC/")
+    assert len(answer["comments"]) == 3
+    with pytest.raises(ToolError, match="no post .* among"):
+        comments(thread(), "https://www.instagram.com/reel/Gone/")
+
+
+def test_reading_or_replying_without_the_comments_permission_says_to_sign_in_again() -> None:
+    for read in (
+        lambda http: meta.comments_of(http, {"META_ACCESS_TOKEN": "t"}, "m1"),
+        lambda http: meta.reply_to(http, {"META_ACCESS_TOKEN": "t"}, "c3", "Thanks!"),
+        lambda http: meta.delete_comment_of(http, {"META_ACCESS_TOKEN": "t"}, "c9"),
+    ):
+        with httpx.Client(transport=httpx.MockTransport(thread(refused=UNPERMITTED))) as http:
+            with pytest.raises(ToolError) as refused:
+                read(http)
+        assert "does not have permission" in str(refused.value)
+        assert "instagram_manage_comments" in str(refused.value)
+        assert "sign in to Meta again" in str(refused.value)
+
+
+def test_a_reply_posts_once_and_answers_its_id() -> None:
+    graph = thread()
+    with httpx.Client(transport=httpx.MockTransport(graph)) as http:
+        assert meta.reply_to(http, {"META_ACCESS_TOKEN": "page-tok"}, "c3", "Thanks!") == {
+            "id": "c9"
+        }
+        with pytest.raises(ToolError, match="a reply needs text"):
+            meta.reply_to(http, {"META_ACCESS_TOKEN": "page-tok"}, "c3", "  ")
+        with pytest.raises(ToolError) as failed:  # Meta's error, plainly
+            meta.reply_to(http, {"META_ACCESS_TOKEN": "page-tok"}, "gone", "Thanks!")
+        with pytest.raises(ToolError, match="^auth_failed"):
+            meta.reply_to(http, {}, "c3", "Thanks!")
+    assert str(failed.value) == "replying to the comment failed (404): unknown path"
+    assert [(r.method, r.url.path) for r in graph.seen] == [
+        ("POST", "/v26.0/c3/replies"),
+        ("POST", "/v26.0/gone/replies"),
+    ]
+
+
+def test_deleting_a_comment_answers_whether_it_was_there() -> None:
+    graph = thread()
+    env = {"META_ACCESS_TOKEN": "page-tok"}
+    with httpx.Client(transport=httpx.MockTransport(graph)) as http:
+        assert meta.delete_comment_of(http, env, "c9") == {"deleted": True}
+        assert meta.delete_comment_of(http, env, "c8") == {"deleted": False}  # a retry is safe
+        with pytest.raises(ToolError) as failed:  # any other error, plainly
+            meta.delete_comment_of(http, env, "c3")
+        with pytest.raises(ToolError, match="needs its id"):
+            meta.delete_comment_of(http, env, " ")
+        with pytest.raises(ToolError, match="^auth_failed"):
+            meta.delete_comment_of(http, {}, "c9")
+    assert str(failed.value) == "deleting the comment failed (404): unknown path"
+    assert [(r.method, r.url.path) for r in graph.seen] == [
+        ("DELETE", "/v26.0/c9"),
+        ("DELETE", "/v26.0/c8"),
+        ("DELETE", "/v26.0/c3"),
+    ]
+    assert graph.seen[0].headers["authorization"] == "OAuth page-tok"
+    expired = {"message": "Error validating access token", "type": "OAuthException", "code": 190}
+    with httpx.Client(transport=httpx.MockTransport(thread(refused=expired))) as http:
+        with pytest.raises(ToolError, match="^auth_failed"):
+            meta.delete_comment_of(http, env, "c9")
+
+
+def test_a_refused_token_fails_reading_comments_as_an_auth_failure() -> None:
+    expired = {"message": "Error validating access token", "type": "OAuthException", "code": 190}
+    with pytest.raises(ToolError, match="^auth_failed"):
+        comments(thread(refused=expired))
+
+
 def test_the_manifest_declares_a_world_sign_in_the_package_finishes() -> None:
     m = read_manifest(HERE)
     assert (m["name"], m["kind"], m["stage_types"]) == ("meta", "publish", ["connector"])
@@ -1058,9 +1235,12 @@ def test_the_installed_package_answers_over_stdio_in_its_sandbox(tmp_path: Path)
     assert found is not None and found.version == VERSION
     assert sorted(t.name for t in connectors.transport.list_tools(found, {})) == [
         "account",
+        "comments",
+        "delete_comment",
         "outcomes",
         "preview",
         "publish",
+        "reply",
         "signed_in",
     ]
     env = connectors._env(found, complete=False)

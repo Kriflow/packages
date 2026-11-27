@@ -1,10 +1,11 @@
-# The Meta connector (README.md beside this file). A default package: Swarmify installs it from
+# The Meta connector (README.md beside this file). A default package: Kriflow installs it from
 # this folder and enables it for every world that has not decided otherwise.
 name = "meta"
-version = "1.3.1"
-contract = 1
+version = "1.5.0"
+# 3: this Manifest is named kriflow-connector.toml, which cores from contract 3 read.
+contract = 3
 label = "Meta"
-about = "Posts Reels to Instagram and a Facebook Page through the Graph API."
+about = "Posts Reels to Instagram and a Facebook Page through the Graph API, reads the comments of an Instagram post, replies to one and deletes its own."
 kind = "publish"
 icon = "icon.svg"
 stage_types = ["connector"]
@@ -74,7 +75,7 @@ type = "string"
 scope = "shared"
 help = "In your Meta app, under Facebook Login for Business, Configurations: the ID of the configuration to sign in with."
 
-# The world's Facebook Page and its Instagram account. Swarmify signs in with Facebook Login for
+# The world's Facebook Page and its Instagram account. Kriflow signs in with Facebook Login for
 # Business, exchanges the code, then calls this package's `signed_in` tool, which keeps the
 # Page's own token (ADR 0029). It never expires, so nothing refreshes it. The Meta app's client
 # ID and secret are the shared Credentials meta_client_id and meta_client_secret.

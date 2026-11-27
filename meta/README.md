@@ -4,10 +4,12 @@ The Meta connector: it posts Reels to a world's Instagram account and the Facebo
 linked to through Meta's Graph API (v26.0). It is our own small MCP server (ADR 0015) and a
 Connector Package (ADR 0019), one of Kriflow's default packages: on startup Kriflow installs it
 from its release tag here into `<data dir>/packages/meta/<version>/` and enables it for every world that
-has not decided otherwise. Everything Kriflow knows of it is `swarmify-connector.toml`.
+has not decided otherwise. Everything Kriflow knows of it is `kriflow-connector.toml`.
 
 It posts Reels to Instagram and the Facebook Page, a retry never posts twice, and it reads
-back their views as Outcomes.
+back their views as Outcomes. It also reads the comments of an Instagram post and replies to one
+(`comments`, `reply`) and deletes a comment of its own (`delete_comment`), for whoever calls its
+tools.
 
 ## The stage
 
@@ -131,7 +133,9 @@ and marks the account **Needs sign-in**; sign in again from the Connectors page.
 the login configuration needed no comment permissions: add `instagram_manage_comments` and
 `pages_manage_engagement` to it and sign in again once, or the `comment` is recorded as failed.
 Before 1.2.0 it needed no `instagram_manage_insights`: add it and sign in again, or Instagram's
-Outcomes are left out with a notice.
+Outcomes are left out with a notice. From 1.4.0 `comments` and `reply` (and from 1.5.0 `delete_comment`) need `instagram_manage_comments` too
+(with `instagram_basic` and `pages_read_engagement`, already listed): a login configuration made
+before 1.1.0 lacks it, so add it and sign in again once, or both fail saying so.
 
 ## What it answers
 
@@ -157,6 +161,28 @@ Outcomes are left out with a notice.
   `_notice` names the permission to add and says to sign in again, while the other Platform's
   numbers still count.
 
+- `comments` takes `media` (an Instagram media ID, or the post's link, found among the
+  account's latest 1,000 media), `replies` (default false) and `after`, and answers `comments`,
+  newest first as Meta orders them, each with `id`, `account` (the commenter's Instagram-scoped
+  id, Meta's `from.id`), `username`, `text`, `timestamp`, `like_count` and `parent_id` (null for
+  a top-level comment). It reads `GET <media>/comments`, which lists top-level comments only, 50
+  a page, and follows the cursor for up to 20 pages (1,000 comments); when more remain, `after`
+  is the cursor to call again with, else null. With `replies: true` each comment's replies come
+  right after it, with `parent_id` set: the first 50 through the comment's `replies` field, the
+  rest through `GET <comment>/replies`. Meta leaves out comments of users the account
+  restricted, so they never appear. It is polling: call it again to see new comments.
+- `reply` takes `comment` (a comment's `id`) and `text` and posts one public reply as the
+  account (`POST <comment>/replies` with `message`), answering the reply's `id`. Empty text is
+  refused before Meta is called. Meta's error is answered as it is (`replying to the comment
+  failed (<status>): <Meta's message>`); a refused token fails with `auth_failed`, and a missing
+  permission adds what to add and to sign in again. A failed reply is never retried by the
+  connector, so a caller retrying it may reply twice.
+- `delete_comment` takes `comment` (a comment's `id`) and deletes it (`DELETE <comment>`): a
+  comment the account wrote, such as one of its replies, or any comment on its own media. It
+  answers `deleted: true`, or `deleted: false` when Meta says the comment does not exist (already
+  deleted), so a caller may retry it. Any other error is answered as it is (`deleting the comment
+  failed (<status>): <Meta's message>`), with `auth_failed` and the permission hint as for `reply`.
+
 A stage that posts only a Facebook draft (`platforms: [facebook]`, `visibility: draft`) posts
 privately and needs no gate (`private_when`); every stage with Instagram is gated.
 
@@ -173,7 +199,11 @@ published or found after Instagram's upload, the same video finished or answered
 Facebook's start, only Facebook redone after Instagram posted, and a new key never reading another
 stage's record. Then `outcomes`: views per Platform and their sum, another connector's Instagram
 link, posts left out, one post's error, and a missing insights permission answered as a
-notice per Platform. Then the package installed through the
+notice per Platform. Then `comments` and `reply` against a fake comment thread: every page
+of top-level comments and their fields, replies after their comment across their own pages,
+stopping after the pages with the cursor to go on from, a post's link, a missing permission,
+Meta's error, empty text and a refused token; `delete_comment` deleting, a comment already
+gone, Meta's other errors and a refused token. Then the package installed through the
 real install path, answering over stdio MCP in its sandbox, and a workflow with an Instagram stage
 and no gate refused when saved. Run it with `tools/test_packages.sh <core checkout> meta` from the repository
 root.

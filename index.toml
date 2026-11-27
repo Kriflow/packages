@@ -89,11 +89,11 @@ permissions = [
 
 [[packages]]
 name = "meta"
-description = "Posts Reels to Instagram and a Facebook Page through the Graph API."
+description = "Posts Reels to Instagram and a Facebook Page through the Graph API, reads the comments of an Instagram post, replies to one and deletes its own."
 git = "https://github.com/Kriflow/packages.git"
 subfolder = "meta"
-ref = "meta-v1.3.1"
-contract = 1
+ref = "meta-v1.5.0"
+contract = 3
 permissions = [
   "network: graph.facebook.com",
   "network: rupload.facebook.com",

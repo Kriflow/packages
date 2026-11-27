@@ -601,6 +601,13 @@ def test_digits_with_a_scale_word_or_a_decimal_are_heard_as_the_number_spelled()
     assert heard("we return four oh nine.", "we return 4-0-9.") == WHOLE
     assert tokens("Oh, two oh") == ["oh", "2", "oh"]
 
+    # a unit or letter stuck to the digits is its own word, and a word that only starts with a
+    # digit is no number (SystemDesign's voice stages crashed on what Whisper wrote)
+    assert heard("that is ten x the load in three D", "that is 10x the load in 3D") == WHOLE
+    assert heard("under one hundred ms at five percent", "under 100ms at 5%") == WHOLE
+    for said in ("99th", "1st", "5xx", "2PC", "10k", "4o4", "1.5.2"):
+        assert sp._spoken([said], heard=True)
+
 
 def test_letters_spelled_apart_are_heard_as_the_word_whisper_writes() -> None:
     """A script spells "G P S" for the engine; Whisper writes "GPS" (SystemDesign's

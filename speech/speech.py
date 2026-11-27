@@ -775,11 +775,13 @@ def _spoken(words: list[str], heard: bool = False) -> list[tuple[list[int], str]
         pieces = word.lower().split("-")
         for k, piece in enumerate(pieces):
             stop = k == len(pieces) - 1 and word[-1:] in ".,;:!?"
-            number = re.fullmatch(r"\$?(\d[\d,]*(?:\.\d+)?)(%?)", piece.strip(".,;:!?\"'()"))
-            if number:
-                raw.append((i, number[1].replace(",", ""), stop and not number[2]))
-                if number[2]:
-                    raw.append((i, "percent", stop))
+            number = re.fullmatch(
+                r"\$?(\d[\d,]*(?:\.\d+)?)(%?)([a-z]*)", piece.strip(".,;:!?\"'()")
+            )
+            if number:  # with a unit or letter stuck on, as Whisper writes "10x" and "3D"
+                tail = ["percent"] * bool(number[2]) + [number[3]] * bool(number[3])
+                raw.append((i, number[1].replace(",", ""), stop and not tail))
+                raw += [(i, t, stop and t is tail[-1]) for t in tail]
             elif norm := _norm(piece):
                 raw.append((i, norm, stop))
     out: list[tuple[list[int], str]] = []
@@ -791,7 +793,8 @@ def _spoken(words: list[str], heard: bool = False) -> list[tuple[list[int], str]
             i, token, stop = raw[n]
             scale = _SCALES.get(token)
             a = token in ("a", "an") and n + 1 < len(raw) and raw[n + 1][1] in _SCALES
-            digits = token[0].isdigit()  # Whisper's "10" of "10 million", "7.2"
+            # Whisper's "10" of "10 million", "7.2"; not "4o4", a word that starts with a digit
+            digits = bool(re.fullmatch(r"[0-9]+(\.[0-9]+)?", token))
             value = Decimal(token) if digits else 1 if a else _VALUES.get(token)
             if (
                 token == "point"
